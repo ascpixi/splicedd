@@ -167,7 +167,7 @@ export default function SampleListEntry(
             </Tooltip>
 
             <div onClick={handlePlayClick} className="cursor-pointer w-8">
-                { fgLoading ? <CircularProgress className="h-8"/> : playing ? <StopIcon/> : <PlayIcon/> }
+                { fgLoading ? <CircularProgress aria-label="Loading sample..." className="h-8"/> : playing ? <StopIcon/> : <PlayIcon/> }
             </div>
         </div>
 

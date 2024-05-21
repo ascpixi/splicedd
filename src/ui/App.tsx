@@ -303,7 +303,7 @@ function App() {
                   <p className="text-small text-default-400">Found {resultCount} sample{results.length != 1 ? "s" : ""} in total.</p>
                 </div>
 
-                <div> { searchLoading && <CircularProgress/> } </div>
+                <div> { searchLoading && <CircularProgress aria-label="Loading results..."/> } </div>
               </div>
 
               <div className="flex-1 flex flex-col">
