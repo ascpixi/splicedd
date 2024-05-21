@@ -1,16 +1,19 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./ui/App";
 import { NextUIProvider } from "@nextui-org/react";
+import { Buffer } from "buffer";
+
+import App from "./ui/App";
 import { loadConfig } from "./config";
+import { refreshDarkMode } from "./ui/theming";
 
 import "./ui/styles.css";
 
-import { Buffer } from "buffer";
-
-window.Buffer = Buffer;
+window.Buffer = Buffer; // required for node-wav
 
 await loadConfig();
+
+refreshDarkMode();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

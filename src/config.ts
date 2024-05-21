@@ -8,6 +8,7 @@ import { useState } from "react";
 export interface SpliceddConfig {
     sampleDir: string;
     placeholders: boolean;
+    darkMode: boolean;
 
     configured: boolean;
 }
@@ -16,6 +17,7 @@ let globalCfg: SpliceddConfig;
 function defaultCfg(): SpliceddConfig {
     return {
         sampleDir: "",
+        darkMode: true,
         placeholders: false,
         configured: false
     }
@@ -51,7 +53,7 @@ export async function loadConfig() {
             dir: BaseDirectory.AppConfig,
         });
     
-        globalCfg = JSON.parse(raw);
+        globalCfg = { ...defaultCfg(), ...JSON.parse(raw) };
     }
 }
 
