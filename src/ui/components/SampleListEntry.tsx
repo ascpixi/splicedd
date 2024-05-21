@@ -93,8 +93,10 @@ export default function SampleListEntry(
         decodedSample = decodeSpliceAudio(new Uint8Array(resp!.data));
     }
 
+    const sanitizePath = (x: string) => x.replace(/[<>:"|?*]/, "_");
+
     async function handleDrag() {
-        const samplePath = sample.name.replace(/[<>:"|?*]/, "_");
+        const samplePath = sanitizePath(pack.name) + "/" + sanitizePath(sample.name);
 
         const dragParams = {
             item: [await path.join(cfg().sampleDir, samplePath)],
@@ -154,7 +156,7 @@ export default function SampleListEntry(
         { fgLoading && <style> { `* { cursor: wait }` } </style> }
 
         { /* sample pack */ }
-        <div className="flex gap-4 grow-0 min-w-20">
+        <div className="flex gap-4 min-w-20">
             <Tooltip content={
                 <div className="flex flex-col gap-2 p-4">
                     <img src={packCover} alt={pack.name} width={128} height={128}></img>
@@ -173,7 +175,7 @@ export default function SampleListEntry(
 
         { /* sample name */ }
         <div className="grow" onMouseDown={handleDrag}>
-            <div className="flex gap-1">
+            <div className="flex gap-1 max-w-[50vw] overflow-clip">
                 {sample.name.split("/").pop()}
                 <div className="text-foreground-400">({sample.asset_category_slug})</div>
             </div>
