@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {Button} from "@nextui-org/button";
 import { SearchIcon, ChevronDownIcon } from '@nextui-org/shared-icons'
@@ -29,6 +29,7 @@ function App() {
 
   const [results, setResults] = useState<SpliceSample[]>([]);
   const [resultCount, setResultCount] = useState(0);
+  const resultContainer = useRef<HTMLDivElement | null>(null);
 
   const [queryTimer, setQueryTimer] = useState<NodeJS.Timeout | null>(null);
 
@@ -67,6 +68,11 @@ function App() {
     if (knownInstruments.length == 0 || knownGenres.length == 0) {
       updateSearch("");
     }
+  }
+
+  function changePage(n: number) {
+    setCurrentPage(n);
+    resultContainer.current?.scrollTo({ top: 0, left: 0, behavior: "smooth" });
   }
 
   function handleSearchInput(ev: React.ChangeEvent<HTMLInputElement>) {
@@ -288,7 +294,9 @@ function App() {
             <img className="w-12" src="img/blob-think.png"/>
             <p className="text-foreground-400">Couldn't find anything. Try changing your query and filters.</p>
           </div>
-        : <div className="my-4 mb-16 overflow-y-scroll shadow-small bg-content1 p-8 rounded flex flex-col gap-8">
+        : <div ref={resultContainer}
+            className="my-4 mb-16 overflow-y-scroll shadow-small bg-content1 p-8 rounded flex flex-col gap-8"
+        >
               <div className="flex justify-between">
                 <div className="space-y-1">
                   <h4 className="text-medium font-medium">Samples</h4>
@@ -298,14 +306,13 @@ function App() {
                 <div> { searchLoading && <CircularProgress/> } </div>
               </div>
 
-
               <div className="flex-1 flex flex-col">
               { results.map(x => <SampleListEntry key={x.uuid} sample={x} ctx={pbCtx}/>) }
               </div>
 
               <div className="w-full flex justify-center">
                 <Pagination variant="bordered" total={totalPages}
-                  page={currentPage} onChange={setCurrentPage}
+                  page={currentPage} onChange={changePage}
                 />
               </div>
             </div>
