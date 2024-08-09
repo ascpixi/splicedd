@@ -232,6 +232,7 @@ function App() {
           selectionMode="multiple"
           selectedKeys={Array.from(tags).map(x => x.uuid)}
           onSelectionChange={x => updateTagState(x as Set<string>)}
+          className="w-1/2"
         >
           { Array.from(tags).map(x => <SelectItem key={x.uuid}>{x.label}</SelectItem>) }
         </Select>
@@ -311,7 +312,7 @@ function App() {
 
         <Select aria-label="Type"
           selectedKeys={[sampleType]} onChange={e => setSampleType(e.target.value as SpliceSampleType)}
-          variant="bordered" className="max-w-48"
+          variant="bordered" className="max-w-32"
         >
           <SelectItem key="any">Any</SelectItem>
           <SelectItem key="oneshot">One-Shots</SelectItem>
