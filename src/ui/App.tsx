@@ -96,6 +96,9 @@ function App() {
   async function updateSearch(newQuery: string, resetPage = false) {
       const payload = createSearchRequest(newQuery);
       payload.variables.sort = sortBy;
+      if (sortBy == "random") {
+        payload.variables.random_seed = Math.floor(Math.random() * 10000000000).toString();
+      }
       
       if (bpmType == "exact") {
         payload.variables.bpm = bpm?.bpm;
