@@ -93,7 +93,7 @@ export default function SampleListEntry(
         decodedSample = decodeSpliceAudio(new Uint8Array(resp!.data));
     }
 
-    const sanitizePath = (x: string) => x.replace(/[<>:"|?*]/, "_");
+    const sanitizePath = (x: string) => x.replace(/[<>:"|?*]/g, "_");
 
     async function handleDrag() {
         const samplePath = sanitizePath(pack.name) + "/" + sanitizePath(sample.name);
