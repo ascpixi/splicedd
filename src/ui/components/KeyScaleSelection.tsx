@@ -1,5 +1,5 @@
 import { Button, Link } from "@nextui-org/react";
-import { ChordType, MusicKey } from "../../splice/api";
+import { ChordType, MusicKey } from "../../splice/entities";
 
 export default function KeyScaleSelection({
   selectedKey, selectedChord, onKeySet, onChordSet
