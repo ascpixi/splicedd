@@ -1,3 +1,5 @@
+import { SpliceSortBy, SpliceSampleType, MusicKey, ChordType, SpliceTag } from "./entities";
+
 export const GRAPHQL_URL = "https://surfaces-graphql.splice.com/graphql"
 
 /**
@@ -29,10 +31,6 @@ export interface SpliceRequest<T> {
   query: string;
   variables: T;
 }
-
-export type SpliceSortBy = "relevance" | "popularity" | "recency" | "random";
-
-export type SpliceSampleType = "oneshot" | "loop";
 
 /**
  * Represents a search GraphQL request to Splice.
@@ -82,9 +80,6 @@ export type SpliceSearchResponse = {
   }
 }
 
-export type MusicKey = "C" | "C#" | "D" | "D#" | "E" | "F" | "F#" | "G" | "G#" | "A" | "A#" | "B";
-export type ChordType = "major" | "minor";
-
 export type SpliceSample = {
   uuid: string,
   name: string,
@@ -99,11 +94,6 @@ export type SpliceSample = {
   instrument: string | null,
   key: MusicKey | null,
   asset_category_slug: "oneshot" | "loop"
-}
-
-export type SpliceTag = {
-  uuid: string,
-  label: string
 }
 
 export type SpliceFile = {

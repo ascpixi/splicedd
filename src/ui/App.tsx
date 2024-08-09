@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 
-import {Button} from "@nextui-org/button";
+import { Button } from "@nextui-org/button";
 import { SearchIcon, ChevronDownIcon } from '@nextui-org/shared-icons'
 import { WrenchIcon } from "@heroicons/react/20/solid";
 import { CircularProgress, Input, Modal, Pagination, Popover, PopoverContent, PopoverTrigger, Radio, RadioGroup, Select, SelectItem, useDisclosure } from "@nextui-org/react";
-import { ChordType, GRAPHQL_URL, MusicKey, SpliceSample, SpliceSampleType, SpliceSearchResponse, SpliceSortBy, createSearchRequest } from "../splice/api";
-import { cfg } from "../config";
 import { fetch } from '@tauri-apps/api/http';
+
+import { cfg } from "../config";
+import { GRAPHQL_URL, SpliceSample, SpliceSearchResponse, createSearchRequest } from "../splice/api";
+import { ChordType, MusicKey, SpliceSampleType, SpliceSortBy, SpliceTag } from "../splice/entities";
 
 import SampleListEntry from "./components/SampleListEntry";
 import SettingsModalContent from "./components/SettingsModalContent";
-import { SamplePlaybackCancellation, SamplePlaybackContext } from "./playback";
 import KeyScaleSelection from "./components/KeyScaleSelection";
+import { SamplePlaybackCancellation, SamplePlaybackContext } from "./playback";
 
 function App() {
   const settings = useDisclosure({
@@ -41,6 +43,7 @@ function App() {
 
   const [instruments, setInstruments] = useState(new Set<string>([]));
   const [genres, setGenres] = useState(new Set<string>([]));
+  let [tags, setTags] = useState<SpliceTag[]>([]);
 
   const [musicKey, setMusicKey] = useState<MusicKey | null>(null);
   const [chordType, setChordType] = useState<ChordType | null>(null);
@@ -93,12 +96,30 @@ function App() {
     }
   }
 
+  function updateTagState(selectedKeys: Set<string>) {
+    tags = tags.filter(x => Array.from(selectedKeys).some(y => x.uuid == y));
+    setTags(tags);
+    updateSearch(query, true);
+  }
+
+  function handleTagClick(tag: SpliceTag) {
+    if (tags.some(x => x.uuid == tag.uuid)) {
+      return;
+    }
+
+    tags = [...tags, tag];
+    setTags(tags);
+    updateSearch(query, true);
+  }
+
   async function updateSearch(newQuery: string, resetPage = false) {
       const payload = createSearchRequest(newQuery);
       payload.variables.sort = sortBy;
       if (sortBy == "random") {
         payload.variables.random_seed = Math.floor(Math.random() * 10000000000).toString();
       }
+
+      payload.variables.tags = tags.map(x => x.uuid);
       
       if (bpmType == "exact") {
         payload.variables.bpm = bpm?.bpm;
@@ -207,6 +228,14 @@ function App() {
           { knownGenres.map(x => <SelectItem key={x.uuid}>{x.name}</SelectItem>) }
         </Select>
 
+        <Select placeholder="Tags" aria-label="Tags" variant="bordered"
+          selectionMode="multiple"
+          selectedKeys={Array.from(tags).map(x => x.uuid)}
+          onSelectionChange={x => updateTagState(x as Set<string>)}
+        >
+          { Array.from(tags).map(x => <SelectItem key={x.uuid}>{x.label}</SelectItem>) }
+        </Select>
+
         <Popover placement="bottom" showArrow={true}>
           <PopoverTrigger>
             <Button variant="bordered" className="w-96" endContent={<ChevronDownIcon/>}>
@@ -310,7 +339,9 @@ function App() {
               </div>
 
               <div className="flex-1 flex flex-col">
-              { results.map(x => <SampleListEntry key={x.uuid} sample={x} ctx={pbCtx}/>) }
+              { results.map(
+                x => <SampleListEntry key={x.uuid} sample={x} onTagClick={handleTagClick} ctx={pbCtx}/>
+              ) }
               </div>
 
               <div className="w-full flex justify-center">

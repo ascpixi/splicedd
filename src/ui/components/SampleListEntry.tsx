@@ -1,30 +1,35 @@
 import { Chip, CircularProgress, Tooltip } from "@nextui-org/react";
-import { SpliceSample } from "../../splice/api";
-import { decodeSpliceAudio } from "../../splice/decoder";
 import { ClockCircleLinearIcon, ClockSquareBoldIcon } from '@nextui-org/shared-icons'
 import { MusicalNoteIcon } from "@heroicons/react/20/solid";
 import { PlayIcon, StopIcon } from "@heroicons/react/20/solid";
 
 import { Response, ResponseType, fetch } from '@tauri-apps/api/http';
 import { useState } from "react";
-import { SamplePlaybackContext } from "../playback";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
 import * as wav from "node-wav";
 import { checkFileExists, createPlaceholder, writeSampleFile } from "../../native";
-import { cfg } from "../../config";
 import { path } from "@tauri-apps/api";
+
+import { cfg } from "../../config";
+import { SamplePlaybackContext } from "../playback";
+import { SpliceTag } from "../../splice/entities";
+import { SpliceSample } from "../../splice/api";
+import { decodeSpliceAudio } from "../../splice/decoder";
 
 const getChordTypeDisplay = (type: string | null) =>
     type == null ? "" : type == "major" ? " Major" : " Minor";
+
+export type TagClickHandler = (tag: SpliceTag) => void;
 
 /**
  * Provides a view describing a Splice sample.
  */
 export default function SampleListEntry(
-    {sample, ctx }: {
+    { sample, ctx, onTagClick }: {
         sample: SpliceSample,
-        ctx: SamplePlaybackContext
+        ctx: SamplePlaybackContext,
+        onTagClick: TagClickHandler
     }
 ) {
     const [fgLoading, setFgLoading] = useState(false);
@@ -95,7 +100,14 @@ export default function SampleListEntry(
 
     const sanitizePath = (x: string) => x.replace(/[<>:"|?*]/g, "_");
 
-    async function handleDrag() {
+    async function handleDrag(ev: React.MouseEvent<HTMLDivElement, MouseEvent>) {
+        // Verify that the parent of the element that we began the dragging from
+        // is not explicitly marked as non-draggable (as it may be clicked etc.)
+        const dragOrigin = document.elementFromPoint(ev.clientX, ev.clientY)?.parentElement;
+        if (dragOrigin != null && dragOrigin.dataset.draggable === "false") {
+            return;
+        }
+
         const samplePath = sanitizePath(pack.name) + "/" + sanitizePath(sample.name);
 
         const dragParams = {
@@ -173,7 +185,7 @@ export default function SampleListEntry(
             </div>
         </div>
 
-        { /* sample name */ }
+        { /* sample name + tags */ }
         <div className="grow" onMouseDown={handleDrag}>
             <div className="flex gap-1 max-w-[50vw] overflow-clip">
                 {sample.name.split("/").pop()}
@@ -181,7 +193,13 @@ export default function SampleListEntry(
             </div>
 
             <div className="flex gap-1">{sample.tags.map(x => (
-                <Chip size="sm" key={x.uuid}>{x.label}</Chip>
+                <Chip key={x.uuid}
+                    size="sm" style={{ cursor: "pointer" }}
+                    onClick={() => onTagClick(x)}
+                    data-draggable="false"
+                >
+                    {x.label}
+                </Chip>
             ))}</div>
         </div>
 
