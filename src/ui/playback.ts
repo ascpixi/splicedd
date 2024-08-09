@@ -4,8 +4,8 @@ import React from "react";
  * Represents a shared audio context.
  */
 export interface SamplePlaybackContext {
-    cancellation: SamplePlaybackCancellation | null;
-    setCancellation: React.Dispatch<React.SetStateAction<SamplePlaybackCancellation | null>>;
+  cancellation: SamplePlaybackCancellation | null;
+  setCancellation: React.Dispatch<React.SetStateAction<SamplePlaybackCancellation | null>>;
 }
 
 /**

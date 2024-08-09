@@ -6,11 +6,11 @@ import { invoke } from '@tauri-apps/api/tauri';
  */
 // /src-tauri/src/files.rs
 export async function writeSampleFile(baseDir: string, relativePath: string, buffer: Buffer) {
-    await invoke("write_sample_file", {
-        baseDir,
-        relativePath,
-        buffer: Array.from(buffer)
-    });
+  await invoke("write_sample_file", {
+    baseDir,
+    relativePath,
+    buffer: Array.from(buffer)
+  });
 }
 
 /**
@@ -18,10 +18,10 @@ export async function writeSampleFile(baseDir: string, relativePath: string, buf
  */
 // /src-tauri/src/files.rs
 export async function checkFileExists(baseDir: string, relativePath: string) {
-    return await invoke<boolean>("file_exists", {
-        baseDir,
-        relativePath
-    });
+  return await invoke<boolean>("file_exists", {
+    baseDir,
+    relativePath
+  });
 }
 
 /**
@@ -29,9 +29,9 @@ export async function checkFileExists(baseDir: string, relativePath: string) {
  */
 // /src-tauri/src/files.rs
 export async function createPlaceholder(baseDir: string, relativePath: string) {
-    await invoke("create_placeholder_file", {
-        baseDir,
-        relativePath
-    });
+  await invoke("create_placeholder_file", {
+    baseDir,
+    relativePath
+  });
 }
 
