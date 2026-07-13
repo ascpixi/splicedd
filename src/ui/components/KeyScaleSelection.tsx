@@ -59,22 +59,24 @@ export default function KeyScaleSelection({
         { chordButton("minor", "Minor") }
       </div>
 
-      { /* Swap to the relative major/minor — the key sharing the same pitches
-           (e.g. A Minor ↔ C Major). Needs both a key and a scale. */ }
-      { selectedKey != null && selectedChord != null &&
-        <Button
-          variant="outline"
-          className="w-full"
-          onClick={() => {
-            const rel = relativeKey(selectedKey, selectedChord);
-            onKeySet(rel.key);
-            onChordSet(rel.chord);
-          }}
-        >Make relative</Button>
-      }
+      <div className="flex items-center pt-2">
+        { /* Swap to the relative major/minor — the key sharing the same pitches
+             (e.g. A Minor ↔ C Major). Needs both a key and a scale. */ }
+        { selectedKey != null && selectedChord != null &&
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const rel = relativeKey(selectedKey, selectedChord);
+              onKeySet(rel.key);
+              onChordSet(rel.chord);
+            }}
+          >Make relative</Button>
+        }
 
-      <div className="flex items-center justify-end pt-2">
-        <Link href="#" onClick={() => { onChordSet(null); onKeySet(null) }}>Clear</Link>
+        { (selectedKey != null || selectedChord != null) &&
+          <Link href="#" className="ml-auto" onClick={() => { onChordSet(null); onKeySet(null) }}>Clear</Link>
+        }
       </div>
     </div>
   )
