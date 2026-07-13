@@ -35,6 +35,7 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
   const sampleDir = useCfgSyncedState<string>("sampleDir");
   const placeholders = useCfgSyncedState<boolean>("placeholders");
   const darkMode = useCfgSyncedState<boolean>("darkMode");
+  const checkUpdates = useCfgSyncedState<boolean>("checkUpdates");
 
   function closeFirstTimeSetup() {
     mutateCfg({ configured: true });
@@ -97,6 +98,20 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
                 isSelected={ cfg().placeholders }
                 onChange={ x => mutateCfgSync(x, placeholders) }
                 aria-label="Enable placeholder files"
+              >
+                <SwitchControl><SwitchThumb /></SwitchControl>
+              </Switch>
+            }
+          />
+
+          <SettingRow
+            title="Check for updates"
+            description="Ask to update when a new version of Splicedd is available."
+            control={
+              <Switch
+                isSelected={ cfg().checkUpdates }
+                onChange={ x => mutateCfgSync(x, checkUpdates) }
+                aria-label="Enable update checks"
               >
                 <SwitchControl><SwitchThumb /></SwitchControl>
               </Switch>

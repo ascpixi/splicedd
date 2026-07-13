@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod files;
+mod updater;
 
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
@@ -113,7 +114,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             files::write_sample_file,
             files::file_exists,
-            files::create_placeholder_file
+            files::create_placeholder_file,
+            updater::fetch_releases,
+            updater::install_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

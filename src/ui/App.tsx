@@ -10,6 +10,8 @@ import { ChordType, MusicKey, SpliceSampleType, SpliceSortBy, SpliceTag } from "
 
 import SampleListEntry from "./components/SampleListEntry";
 import SettingsModalContent from "./components/SettingsModalContent";
+import UpdateModal from "./components/UpdateModal";
+import { UpdateInfo, checkForUpdates } from "../updater";
 import KeyScaleSelection from "./components/KeyScaleSelection";
 import BpmSelection, { BpmFilter, BpmFilterType } from "./components/BpmSelection";
 import { SamplePlaybackCancellation, SamplePlaybackContext } from "./playback";
@@ -114,6 +116,14 @@ function App() {
 
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+
+  useEffect(() => {
+    checkForUpdates()
+      .then(setUpdate)
+      .catch(err => console.error("Update check failed:", err));
+  }, []);
 
   // Results should be visible not only when a text query is entered, but also
   // when the user is filtering solely by tags, key, BPM, etc.
@@ -283,6 +293,10 @@ function App() {
           </ModalContainer>
         </ModalBackdrop>
       </Modal>
+
+      { update != null &&
+        <UpdateModal update={update} onDismiss={() => setUpdate(null)} />
+      }
 
       <div className="flex gap-2">
         <InputGroup className="flex-1">

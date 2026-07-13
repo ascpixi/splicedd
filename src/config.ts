@@ -10,6 +10,10 @@ export interface SpliceddConfig {
   sampleDir: string;
   placeholders: boolean;
   darkMode: boolean;
+  checkUpdates: boolean;
+
+  /** The release tag (e.g. "v1.2.0") the user chose to skip, if any. */
+  skippedUpdateVersion: string;
 
   configured: boolean;
 }
@@ -20,6 +24,8 @@ function defaultCfg(): SpliceddConfig {
     sampleDir: "",
     darkMode: true,
     placeholders: false,
+    checkUpdates: true,
+    skippedUpdateVersion: "",
     configured: false
   }
 }
