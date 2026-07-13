@@ -35,6 +35,13 @@ export default function UpdateModal({ update, onDismiss }: {
     try {
       // If this succeeds, the installer is running and the app is about to exit.
       await installUpdate(update);
+
+      // When there's no installer for this platform, `installUpdate` just opens
+      // the release page in the browser and returns without exiting the app.
+      // Dismiss the (otherwise un-closable) dialog instead of leaving it stuck
+      // showing "Downloading...".
+      if (update.installerUrl == null)
+        onDismiss();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setDownloading(false);
