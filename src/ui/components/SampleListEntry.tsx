@@ -1,15 +1,15 @@
-import { Chip, CircularProgress, Tooltip } from "@nextui-org/react";
-import { ClockCircleLinearIcon, ClockSquareBoldIcon } from '@nextui-org/shared-icons'
+import { Chip, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, Tooltip, TooltipContent, TooltipTrigger } from "@heroui/react";
+import { ClockCircleLinearIcon, ClockSquareBoldIcon } from '@heroui/shared-icons'
 import { MusicalNoteIcon } from "@heroicons/react/20/solid";
 import { PlayIcon, StopIcon } from "@heroicons/react/20/solid";
 
-import { Response, ResponseType, fetch } from '@tauri-apps/api/http';
+import { fetch } from "@tauri-apps/plugin-http";
 import { useState } from "react";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
 import * as wav from "node-wav";
 import { checkFileExists, createPlaceholder, writeSampleFile } from "../../native";
-import { path } from "@tauri-apps/api";
+import { join } from "@tauri-apps/api/path";
 
 import { cfg } from "../../config";
 import { SamplePlaybackContext } from "../playback";
@@ -41,19 +41,16 @@ export default function SampleListEntry(
     ? pack.files.find(x => x.asset_file_type_slug == "cover_image")?.url
     : "img/missing-cover.png";
 
-  let decodedSample: Uint8Array | null = null;
+  let decodedSample: Uint8Array<ArrayBuffer> | null = null;
 
-  let fetchAhead: Promise<Response<ArrayBuffer>> | null = null;
+  let fetchAhead: Promise<Response> | null = null;
   function startFetching() {
     if (fetchAhead != null)
       return;
 
     const file = sample.files.find(x => x.asset_file_type_slug == "preview_mp3")!;
 
-    fetchAhead = fetch<ArrayBuffer>(file.url, {
-      method: "GET",
-      responseType: ResponseType.Binary
-    });
+    fetchAhead = fetch(file.url);
   }
 
   audio.onended = () => setPlaying(false);
@@ -94,8 +91,9 @@ export default function SampleListEntry(
       startFetching();
     }
 
-    const resp = await fetchAhead;
-    decodedSample = decodeSpliceAudio(new Uint8Array(resp!.data));
+    const resp = await fetchAhead!;
+    const data = await resp.arrayBuffer();
+    decodedSample = decodeSpliceAudio(new Uint8Array(data));
   }
 
   const sanitizePath = (x: string) => x.replace(/[<>:"|?* ]/g, "_");
@@ -111,7 +109,7 @@ export default function SampleListEntry(
     const samplePath = sanitizePath(pack.name) + "/" + sanitizePath(sample.name);
 
     const dragParams = {
-      item: [await path.join(cfg().sampleDir, samplePath)],
+      item: [await join(cfg().sampleDir, samplePath)],
       icon: ""
     };
 
@@ -143,7 +141,7 @@ export default function SampleListEntry(
         console.warn(`big boi detected of ${samples.length} samples - not pre-processing!`);
       }
 
-      await writeSampleFile(cfg().sampleDir, samplePath, wav.encode(channels, {
+      await writeSampleFile(cfg().sampleDir, samplePath, wav.encode(channels as unknown as ArrayBuffer[], {
         bitDepth: 16,
         sampleRate: samples.sampleRate
       }));
@@ -161,27 +159,37 @@ export default function SampleListEntry(
 
   return (
     <div onMouseOver={startFetching}
-      className={`flex w-full px-4 py-2 gap-8 rounded transition-background
-                    items-center hover:bg-foreground-100 cursor-grab select-none`}
+      className={`flex w-full px-4 py-2 gap-8 rounded transition-colors
+                    items-center hover:bg-surface-secondary cursor-grab select-none`}
     >
       { /* when loading, set the cursor for everything to a waiting icon */}
       {fgLoading && <style> {`* { cursor: wait }`} </style>}
 
       { /* sample pack */}
       <div className="flex gap-4 min-w-20">
-        <Tooltip content={
-          <div className="flex flex-col gap-2 p-4">
-            <img src={packCover} alt={pack.name} width={128} height={128}></img>
-            <h1>{pack.name}</h1>
-          </div>
-        }>
-          <a href={`https://splice.com/sounds/labels/${pack.permalink_base_url}`} target="_blank">
-            <img src={packCover} alt={pack.name} width={32} height={32} />
-          </a>
+        <Tooltip>
+          <TooltipTrigger>
+            <a href={`https://splice.com/sounds/labels/${pack.permalink_base_url}`} target="_blank">
+              <img src={packCover} alt={pack.name} width={32} height={32} />
+            </a>
+          </TooltipTrigger>
+          <TooltipContent>
+            <div className="flex flex-col gap-2 p-4">
+              <img src={packCover} alt={pack.name} width={128} height={128}></img>
+              <h1>{pack.name}</h1>
+            </div>
+          </TooltipContent>
         </Tooltip>
 
         <div onClick={handlePlayClick} className="cursor-pointer w-8">
-          {fgLoading ? <CircularProgress aria-label="Loading sample..." className="h-8" /> : playing ? <StopIcon /> : <PlayIcon />}
+          {fgLoading
+            ? <ProgressCircle aria-label="Loading sample..." className="h-8" isIndeterminate>
+                <ProgressCircleTrack>
+                  <ProgressCircleTrackCircle />
+                  <ProgressCircleFillCircle />
+                </ProgressCircleTrack>
+              </ProgressCircle>
+            : playing ? <StopIcon /> : <PlayIcon />}
         </div>
       </div>
 
@@ -189,7 +197,7 @@ export default function SampleListEntry(
       <div className="grow" onMouseDown={handleDrag}>
         <div className="flex gap-1 max-w-[50vw] overflow-clip">
           {sample.name.split("/").pop()}
-          <div className="text-foreground-400">({sample.asset_category_slug})</div>
+          <div className="text-muted">({sample.asset_category_slug})</div>
         </div>
 
         <div className="flex gap-1">{sample.tags.map(x => (
@@ -206,19 +214,19 @@ export default function SampleListEntry(
       { /* other metadata */}
       <div className="flex gap-8" onMouseDown={handleDrag}>
         {sample.key != null ?
-          <div className="flex items-center gap-2 font-semibold text-foreground-500">
+          <div className="flex items-center gap-2 font-semibold text-muted">
             <MusicalNoteIcon className="w-4" />
             <span>{`${sample.key.toUpperCase()}${getChordTypeDisplay(sample.chord_type)}`}</span>
           </div>
           : <></>}
 
-        <div className="flex items-center gap-2 font-semibold text-foreground-500">
+        <div className="flex items-center gap-2 font-semibold text-muted">
           <ClockCircleLinearIcon />
           <span>{`${(sample.duration / 1000).toFixed(2)}s`}</span>
         </div>
 
         {sample.bpm != null ?
-          <div className="flex items-center gap-2 font-semibold text-foreground-500">
+          <div className="flex items-center gap-2 font-semibold text-muted">
             <ClockSquareBoldIcon />
             <span>{`${sample.bpm} BPM`}</span>
           </div>

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 
-import { Button } from "@nextui-org/button";
-import { SearchIcon, ChevronDownIcon } from '@nextui-org/shared-icons'
+import { Button, ListBox, ListBoxItem, ListBoxItemIndicator, ModalBackdrop, ModalCloseTrigger, ModalContainer, ModalDialog, Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationNextIcon, PaginationPrevious, PaginationPreviousIcon, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, useOverlayState } from "@heroui/react";
+import { InputGroup, InputGroupInput, InputGroupPrefix, InputGroupSuffix, Label, Modal, Popover, PopoverArrow, PopoverContent, PopoverDialog, Radio, RadioControl, RadioGroup, RadioIndicator, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue, TextField } from "@heroui/react";
+import { SearchIcon, ChevronDownIcon } from '@heroui/shared-icons'
 import { WrenchIcon } from "@heroicons/react/20/solid";
-import { CircularProgress, Input, Modal, Pagination, Popover, PopoverContent, PopoverTrigger, Radio, RadioGroup, Select, SelectItem, useDisclosure } from "@nextui-org/react";
+import { emit, listen } from "@tauri-apps/api/event";
 import { cfg } from "../config";
 import { SpliceSample, SpliceSearchResponse, createSearchRequest } from "../splice/api";
 import { ChordType, MusicKey, SpliceSampleType, SpliceSortBy, SpliceTag } from "../splice/entities";
@@ -13,8 +14,61 @@ import SettingsModalContent from "./components/SettingsModalContent";
 import KeyScaleSelection from "./components/KeyScaleSelection";
 import { SamplePlaybackCancellation, SamplePlaybackContext } from "./playback";
 
+/**
+ * Runs a Splice GraphQL request through the hidden splice.com helper webview
+ * (see `splice-helper` in the Rust backend), which fetches from the splice.com
+ * origin so it clears Cloudflare Bot Management and Splice's CORS. Communication
+ * is a one-shot event round-trip correlated by a request id.
+ */
+function spliceSearch(body: string): Promise<string> {
+  const id = crypto.randomUUID();
+
+  return new Promise<string>((resolve, reject) => {
+    let unlisten: (() => void) | null = null;
+
+    // Re-emit periodically: the helper webview may not have registered its
+    // listener yet (it's still loading splice.com / clearing Cloudflare), and
+    // Tauri drops events that have no listener rather than queuing them.
+    const reEmit = setInterval(() => { emit("splice-search", { id, body }); }, 1500);
+
+    const settle = () => { clearInterval(reEmit); clearTimeout(timer); unlisten?.(); };
+
+    const timer = setTimeout(() => {
+      settle();
+      reject(new Error("Splice search timed out (the helper webview may still be clearing Cloudflare)."));
+    }, 20000);
+
+    listen<{ id: string, ok: boolean, body?: string, error?: string }>("splice-result", ev => {
+      if (ev.payload.id !== id) return;
+
+      settle();
+
+      if (ev.payload.ok && ev.payload.body != null) {
+        resolve(ev.payload.body);
+      } else {
+        reject(new Error(ev.payload.error ?? "Splice search failed"));
+      }
+    }).then(fn => {
+      unlisten = fn;
+      emit("splice-search", { id, body });
+    });
+  });
+}
+
+function buildPageList(current: number, total: number): (number | "ellipsis")[] {
+  const pages: (number | "ellipsis")[] = [];
+  for (let p = 1; p <= total; p++) {
+    if (p === 1 || p === total || Math.abs(p - current) <= 2) {
+      pages.push(p);
+    } else if (pages[pages.length - 1] !== "ellipsis") {
+      pages.push("ellipsis");
+    }
+  }
+  return pages;
+}
+
 function App() {
-  const settings = useDisclosure({
+  const settings = useOverlayState({
     defaultOpen: !cfg().configured
   });
 
@@ -31,7 +85,7 @@ function App() {
   const [resultCount, setResultCount] = useState(0);
   const resultContainer = useRef<HTMLDivElement | null>(null);
 
-  const [queryTimer, setQueryTimer] = useState<NodeJS.Timeout | null>(null);
+  const [queryTimer, setQueryTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
 
   const [sortBy, setSortBy] = useState<SpliceSortBy>("relevance");
   const [sampleType, setSampleType] = useState<SpliceSampleType | "any">("any")
@@ -57,7 +111,7 @@ function App() {
     sortBy, bpm, bpmType, sampleType,
     instruments, genres, currentPage,
     musicKey, chordType
-  ]); 
+  ]);
 
   const [smplCancellation, smplSetCancellation] = useState<SamplePlaybackCancellation | null>(null);
   const pbCtx: SamplePlaybackContext = {
@@ -78,7 +132,7 @@ function App() {
 
   function handleSearchInput(ev: React.ChangeEvent<HTMLInputElement>) {
     setQuery(ev.target.value);
-    
+
     if (queryTimer != null) {
       clearTimeout(queryTimer);
     }
@@ -118,7 +172,7 @@ function App() {
       }
 
       payload.variables.tags = tags.map(x => x.uuid);
-      
+
       if (bpmType == "exact") {
         payload.variables.bpm = bpm?.bpm;
       } else {
@@ -135,22 +189,22 @@ function App() {
 
       payload.variables.chord_type = chordType ?? undefined;
       payload.variables.key = musicKey ?? undefined;
-      
+
       payload.variables.page = resetPage ? 1 : currentPage;
 
       setSearchLoading(true);
 
-      const resp = await window.fetch("https://surfaces-graphql.splice.com/graphql", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
+      // Routed through the hidden splice.com helper webview so the request clears
+      // Cloudflare Bot Management (which blocks non-browser TLS fingerprints) and
+      // Splice's CORS. A direct browser fetch from our own origin can't do this
+      // without disabling web security, which breaks Tauri v2 IPC.
+      const raw = await spliceSearch(JSON.stringify(payload));
 
       setSearchLoading(false);
 
       pbCtx.cancellation?.(); // stop any sample that's currently playing
 
-      const respData: SpliceSearchResponse = await resp.json();
+      const respData: SpliceSearchResponse = JSON.parse(raw);
       const data = respData.data.assetsSearch;
 
       setResults(data.items);
@@ -171,149 +225,223 @@ function App() {
 
   return (
     <main className="flex flex-col gap-2 m-8 h-screen">
-      <Modal size="3xl" isDismissable={false} hideCloseButton={!cfg().configured}
-            isOpen={settings.isOpen} onOpenChange={settings.onOpenChange}
-      >
-        <SettingsModalContent/>
+      <Modal isOpen={settings.isOpen} onOpenChange={settings.setOpen}>
+        <ModalBackdrop isDismissable={false}>
+          <ModalContainer size="lg">
+            <ModalDialog>
+              {cfg().configured && <ModalCloseTrigger />}
+              <SettingsModalContent onClose={settings.close} />
+            </ModalDialog>
+          </ModalContainer>
+        </ModalBackdrop>
       </Modal>
 
       <div className="flex gap-2">
-        <Input
+        <InputGroup className="flex-1">
+          <InputGroupPrefix>
+            <SearchIcon className="w-6" />
+          </InputGroupPrefix>
+          <InputGroupInput
             type="text"
             aria-label="Search for samples"
             placeholder="Search for samples..."
-            labelPlacement="outside"
-            variant="bordered"
             value={query}
             onKeyDown={handleSearchKeyDown}
             onChange={handleSearchInput}
-            startContent={
-              <SearchIcon className="w-6" />
-            }
           />
+        </InputGroup>
 
-        <Select variant="bordered"
+        <Select
           aria-label="Sort by"
-          selectedKeys={[sortBy]} onChange={e => setSortBy(e.target.value as SpliceSortBy)}
-          startContent={<span className="w-20 text-sm text-foreground-400">Sort by: </span>}
+          value={sortBy}
+          onChange={v => setSortBy(v as SpliceSortBy)}
         >
-            <SelectItem key="relevance">Most relevant</SelectItem>
-            <SelectItem key="popularity">Most popular</SelectItem>
-            <SelectItem key="recency">Most recent</SelectItem>
-            <SelectItem key="random">Random</SelectItem>
+          <SelectTrigger>
+            <span className="w-20 text-sm text-muted">Sort by: </span>
+            <SelectValue />
+            <SelectIndicator />
+          </SelectTrigger>
+          <SelectPopover>
+            <ListBox>
+              <ListBoxItem id="relevance" textValue="Most relevant">Most relevant<ListBoxItemIndicator /></ListBoxItem>
+              <ListBoxItem id="popularity" textValue="Most popular">Most popular<ListBoxItemIndicator /></ListBoxItem>
+              <ListBoxItem id="recency" textValue="Most recent">Most recent<ListBoxItemIndicator /></ListBoxItem>
+              <ListBoxItem id="random" textValue="Random">Random<ListBoxItemIndicator /></ListBoxItem>
+            </ListBox>
+          </SelectPopover>
         </Select>
 
-        <Button isIconOnly variant="bordered" aria-label="Settings" onClick={settings.onOpen}>
+        <Button isIconOnly variant="outline" aria-label="Settings" onClick={settings.open}>
           <WrenchIcon className="w-4" />
         </Button>
       </div>
 
       <div className="flex gap-2">
-        <Select placeholder="Instruments" aria-label="Instruments" variant="bordered"
-          selectionMode="multiple" onOpenChange={ensureContraintsGathered}
-          selectedKeys={instruments}
-          onSelectionChange={x => setInstruments(x as Set<string>)}
-        >
-          { knownInstruments.map(x => <SelectItem key={x.uuid}>{x.name}</SelectItem>) }
-        </Select>
-
-        <Select placeholder="Genres" aria-label="Genres" variant="bordered"
-          selectionMode="multiple" onOpenChange={ensureContraintsGathered}
-          selectedKeys={genres}
-          onSelectionChange={x => setGenres(x as Set<string>)}
-        >
-          { knownGenres.map(x => <SelectItem key={x.uuid}>{x.name}</SelectItem>) }
-        </Select>
-
-        <Select placeholder="Tags" aria-label="Tags" variant="bordered"
+        <Select aria-label="Instruments"
           selectionMode="multiple"
-          selectedKeys={Array.from(tags).map(x => x.uuid)}
-          onSelectionChange={x => updateTagState(x as Set<string>)}
+          placeholder="Instruments"
+          value={Array.from(instruments)}
+          onChange={x => setInstruments(new Set(x as string[]))}
+        >
+          <SelectTrigger onPress={ensureContraintsGathered}>
+            <SelectValue />
+            <SelectIndicator />
+          </SelectTrigger>
+          <SelectPopover>
+            <ListBox items={knownInstruments}>
+              {(x: {name: string, uuid: string}) => <ListBoxItem id={x.uuid} textValue={x.name}>{x.name}<ListBoxItemIndicator /></ListBoxItem>}
+            </ListBox>
+          </SelectPopover>
+        </Select>
+
+        <Select aria-label="Genres"
+          selectionMode="multiple"
+          placeholder="Genres"
+          value={Array.from(genres)}
+          onChange={x => setGenres(new Set(x as string[]))}
+        >
+          <SelectTrigger onPress={ensureContraintsGathered}>
+            <SelectValue />
+            <SelectIndicator />
+          </SelectTrigger>
+          <SelectPopover>
+            <ListBox items={knownGenres}>
+              {(x: {name: string, uuid: string}) => <ListBoxItem id={x.uuid} textValue={x.name}>{x.name}<ListBoxItemIndicator /></ListBoxItem>}
+            </ListBox>
+          </SelectPopover>
+        </Select>
+
+        <Select aria-label="Tags"
+          selectionMode="multiple"
+          placeholder="Tags"
+          value={tags.map(x => x.uuid)}
+          onChange={x => updateTagState(new Set(x as string[]))}
           className="w-1/2"
         >
-          { Array.from(tags).map(x => <SelectItem key={x.uuid}>{x.label}</SelectItem>) }
+          <SelectTrigger>
+            <SelectValue />
+            <SelectIndicator />
+          </SelectTrigger>
+          <SelectPopover>
+            <ListBox items={tags}>
+              {(x: SpliceTag) => <ListBoxItem id={x.uuid} textValue={x.label}>{x.label}<ListBoxItemIndicator /></ListBoxItem>}
+            </ListBox>
+          </SelectPopover>
         </Select>
 
-        <Popover placement="bottom" showArrow={true}>
-          <PopoverTrigger>
-            <Button variant="bordered" className="w-96" endContent={<ChevronDownIcon/>}>
-              { 
-                (musicKey == null && chordType == null) ? "Key"
-                  : `${musicKey ?? ""}${chordType == null ? "" : chordType == "major" ? " Major" : " Minor"}`
-              }
-            </Button>
-          </PopoverTrigger>
+        <Popover>
+          <Button variant="outline" className="w-96">
+            {
+              (musicKey == null && chordType == null) ? "Key"
+                : `${musicKey ?? ""}${chordType == null ? "" : chordType == "major" ? " Major" : " Minor"}`
+            }
+            <ChevronDownIcon className="w-4" />
+          </Button>
 
-          <PopoverContent className="flex p-8 ">
-            <KeyScaleSelection
-              onChordSet={setChordType} onKeySet={setMusicKey}
-              selectedChord={chordType} selectedKey={musicKey}
-            />
+          <PopoverContent placement="bottom">
+            <PopoverArrow />
+            <PopoverDialog className="flex p-8">
+              <KeyScaleSelection
+                onChordSet={setChordType} onKeySet={setMusicKey}
+                selectedChord={chordType} selectedKey={musicKey}
+              />
+            </PopoverDialog>
           </PopoverContent>
         </Popover>
 
-        <Popover placement="bottom" showArrow={true}>
-          <PopoverTrigger>
-            <Button variant="bordered" className="w-96" endContent={<ChevronDownIcon/>}>
-              { (bpmType == "exact" && bpm?.bpm
-                  ? `${bpm?.bpm} BPM`
-                  : bpmType == "range" && bpm?.maxBpm && bpm.minBpm
-                    ? `${bpm.minBpm} - ${bpm.maxBpm} BPM`
-                    : "BPM"
-                )
-              } 
-            </Button>
-          </PopoverTrigger>
-
-          <PopoverContent className="p-8 flex items-start justify-start">
-            <RadioGroup defaultValue="exact" value={bpmType}>
-              <Radio value="exact" onChange={() => setBpmType("exact")}>Exact</Radio>
-              <Radio value="range" onChange={() => setBpmType("range")}>Range</Radio>
-            </RadioGroup>
-
-            <br/>
-
-            {
-              bpmType == "exact" ? (
-                <div>
-                  <Input
-                    type="number" variant="bordered"
-                    label="BPM" labelPlacement="outside"
-                    placeholder="(tempo)"
-                    onChange={e => setBpm({ ...bpm, bpm: e.target.value })}
-                    value={bpm?.bpm?.toString() ?? ""}
-                  />
-                </div>
-              ) : (
-                <div className="flex flex-col align-middle justify-center items-center gap-2">
-                  <Input
-                    type="number" variant="bordered"
-                    label="Minimum" labelPlacement="outside" endContent="BPM" placeholder="(tempo)"
-                    onChange={e => setBpm({...bpm, minBpm: parseInt(e.target.value) })}
-                    value={bpm?.minBpm?.toString() ?? ""}
-                  />
-
-                  <div className="align-middle">to</div>
-
-                  <Input
-                    type="number" variant="bordered"
-                    label="Maximum" labelPlacement="outside" endContent="BPM" placeholder="(tempo)"
-                    onChange={e => setBpm({...bpm, maxBpm: parseInt(e.target.value) })}
-                    value={bpm?.maxBpm?.toString() ?? ""}
-                  />
-                </div>
+        <Popover>
+          <Button variant="outline" className="w-96">
+            { (bpmType == "exact" && bpm?.bpm
+                ? `${bpm?.bpm} BPM`
+                : bpmType == "range" && bpm?.maxBpm && bpm.minBpm
+                  ? `${bpm.minBpm} - ${bpm.maxBpm} BPM`
+                  : "BPM"
               )
             }
+            <ChevronDownIcon className="w-4" />
+          </Button>
+
+          <PopoverContent placement="bottom">
+            <PopoverArrow />
+            <PopoverDialog className="p-8 flex flex-col items-start justify-start">
+              <RadioGroup
+                aria-label="BPM filter type"
+                value={bpmType}
+                onChange={v => setBpmType(v as "exact" | "range")}
+              >
+                <Radio value="exact">
+                  <RadioControl><RadioIndicator /></RadioControl>
+                  Exact
+                </Radio>
+                <Radio value="range">
+                  <RadioControl><RadioIndicator /></RadioControl>
+                  Range
+                </Radio>
+              </RadioGroup>
+
+              <br/>
+
+              {
+                bpmType == "exact" ? (
+                  <div>
+                    <TextField
+                      value={bpm?.bpm?.toString() ?? ""}
+                      onChange={v => setBpm({ ...bpm, bpm: v })}
+                    >
+                      <Label>BPM</Label>
+                      <InputGroup>
+                        <InputGroupInput type="number" placeholder="(tempo)" />
+                      </InputGroup>
+                    </TextField>
+                  </div>
+                ) : (
+                  <div className="flex flex-col align-middle justify-center items-center gap-2">
+                    <TextField
+                      value={bpm?.minBpm?.toString() ?? ""}
+                      onChange={v => setBpm({ ...bpm, minBpm: parseInt(v) })}
+                    >
+                      <Label>Minimum</Label>
+                      <InputGroup>
+                        <InputGroupInput type="number" placeholder="(tempo)" />
+                        <InputGroupSuffix>BPM</InputGroupSuffix>
+                      </InputGroup>
+                    </TextField>
+
+                    <div className="align-middle">to</div>
+
+                    <TextField
+                      value={bpm?.maxBpm?.toString() ?? ""}
+                      onChange={v => setBpm({ ...bpm, maxBpm: parseInt(v) })}
+                    >
+                      <Label>Maximum</Label>
+                      <InputGroup>
+                        <InputGroupInput type="number" placeholder="(tempo)" />
+                        <InputGroupSuffix>BPM</InputGroupSuffix>
+                      </InputGroup>
+                    </TextField>
+                  </div>
+                )
+              }
+            </PopoverDialog>
           </PopoverContent>
         </Popover>
 
         <Select aria-label="Type"
-          selectedKeys={[sampleType]} onChange={e => setSampleType(e.target.value as SpliceSampleType)}
-          variant="bordered" className="max-w-32"
+          value={sampleType}
+          onChange={v => setSampleType(v as SpliceSampleType | "any")}
+          className="max-w-32"
         >
-          <SelectItem key="any">Any</SelectItem>
-          <SelectItem key="oneshot">One-Shots</SelectItem>
-          <SelectItem key="loop">Loops</SelectItem>
+          <SelectTrigger>
+            <SelectValue />
+            <SelectIndicator />
+          </SelectTrigger>
+          <SelectPopover>
+            <ListBox>
+              <ListBoxItem id="any" textValue="Any">Any<ListBoxItemIndicator /></ListBoxItem>
+              <ListBoxItem id="oneshot" textValue="One-Shots">One-Shots<ListBoxItemIndicator /></ListBoxItem>
+              <ListBoxItem id="loop" textValue="Loops">Loops<ListBoxItemIndicator /></ListBoxItem>
+            </ListBox>
+          </SelectPopover>
         </Select>
       </div>
 
@@ -322,18 +450,25 @@ function App() {
         ? results.length == 0
         ? <div className="flex flex-col items-center h-full justify-center space-y-6">
             <img className="w-12" src="img/blob-think.png"/>
-            <p className="text-foreground-400">Couldn't find anything. Try changing your query and filters.</p>
+            <p className="text-muted">Couldn't find anything. Try changing your query and filters.</p>
           </div>
         : <div ref={resultContainer}
-            className="my-4 mb-16 overflow-y-scroll shadow-small bg-content1 p-8 rounded flex flex-col gap-8"
+            className="my-4 mb-16 overflow-y-scroll shadow-md bg-surface p-8 rounded flex flex-col gap-8"
         >
               <div className="flex justify-between">
                 <div className="space-y-1">
-                  <h4 className="text-medium font-medium">Samples</h4>
-                  <p className="text-small text-default-400">Found {resultCount} sample{results.length != 1 ? "s" : ""} in total.</p>
+                  <h4 className="text-base font-medium">Samples</h4>
+                  <p className="text-sm text-muted">Found {resultCount} sample{results.length != 1 ? "s" : ""} in total.</p>
                 </div>
 
-                <div> { searchLoading && <CircularProgress aria-label="Loading results..."/> } </div>
+                <div> { searchLoading &&
+                  <ProgressCircle aria-label="Loading results..." isIndeterminate>
+                    <ProgressCircleTrack>
+                      <ProgressCircleTrackCircle />
+                      <ProgressCircleFillCircle />
+                    </ProgressCircleTrack>
+                  </ProgressCircle>
+                } </div>
               </div>
 
               <div className="flex-1 flex flex-col">
@@ -343,14 +478,38 @@ function App() {
               </div>
 
               <div className="w-full flex justify-center">
-                <Pagination variant="bordered" total={totalPages}
-                  page={currentPage} onChange={changePage}
-                />
+                <Pagination>
+                  <PaginationContent>
+                    <PaginationItem>
+                      <PaginationPrevious
+                        onClick={() => changePage(Math.max(1, currentPage - 1))}
+                        isDisabled={currentPage <= 1}
+                      >
+                        <PaginationPreviousIcon />
+                      </PaginationPrevious>
+                    </PaginationItem>
+                    {buildPageList(currentPage, totalPages).map((p, i) =>
+                      p === "ellipsis"
+                        ? <PaginationItem key={`ellipsis-${i}`}><PaginationEllipsis /></PaginationItem>
+                        : <PaginationItem key={p}>
+                            <PaginationLink isActive={p === currentPage} onClick={() => changePage(p)}>{p}</PaginationLink>
+                          </PaginationItem>
+                    )}
+                    <PaginationItem>
+                      <PaginationNext
+                        onClick={() => changePage(Math.min(totalPages, currentPage + 1))}
+                        isDisabled={currentPage >= totalPages}
+                      >
+                        <PaginationNextIcon />
+                      </PaginationNext>
+                    </PaginationItem>
+                  </PaginationContent>
+                </Pagination>
               </div>
             </div>
           : <div className="flex flex-col items-center h-full justify-center space-y-6">
               <img className="w-12" src="img/blob-salute.png"/>
-              <p className="text-foreground-400">Waiting for your command!</p>
+              <p className="text-muted">Waiting for your command!</p>
             </div>
       }
     </main>

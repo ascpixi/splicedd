@@ -1,5 +1,5 @@
-import { BaseDirectory, createDir, exists, readTextFile, writeTextFile } from "@tauri-apps/api/fs";
-import { appConfigDir } from "@tauri-apps/api/path";
+import { exists, readTextFile, writeTextFile, mkdir } from "@tauri-apps/plugin-fs";
+import { BaseDirectory, appConfigDir } from "@tauri-apps/api/path";
 import { useState } from "react";
 
 /**
@@ -24,7 +24,7 @@ function defaultCfg(): SpliceddConfig {
 }
 
 /**
- * Returns the global configuration object. The returned object should be treated as immutable. 
+ * Returns the global configuration object. The returned object should be treated as immutable.
  */
 export function cfg(): SpliceddConfig {
   return globalCfg;
@@ -43,14 +43,13 @@ export async function mutateCfg(values: Partial<SpliceddConfig>) {
  */
 export async function loadConfig() {
   const appConfig = await appConfigDir();
-  if (!await exists(appConfig))
-    await createDir(appConfig);
+  await mkdir(appConfig, { recursive: true }).catch(() => {});
 
-  if (!await exists("config.json", { dir: BaseDirectory.AppConfig })) {
+  if (!await exists("config.json", { baseDir: BaseDirectory.AppConfig })) {
     globalCfg = defaultCfg();
   } else {
     const raw = await readTextFile("config.json", {
-      dir: BaseDirectory.AppConfig,
+      baseDir: BaseDirectory.AppConfig,
     });
 
     globalCfg = { ...defaultCfg(), ...JSON.parse(raw) };
@@ -62,7 +61,7 @@ export async function loadConfig() {
  */
 export async function saveConfig() {
   await writeTextFile("config.json", JSON.stringify(globalCfg, null, 2), {
-    dir: BaseDirectory.AppConfig
+    baseDir: BaseDirectory.AppConfig
   });
 }
 

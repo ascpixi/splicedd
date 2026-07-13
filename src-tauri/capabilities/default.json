@@ -1,0 +1,33 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for Splicedd",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "dialog:default",
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [{ "path": "$APPCONFIG/**" }]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [{ "path": "$APPCONFIG/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [{ "path": "$APPCONFIG/**" }]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [{ "path": "$APPCONFIG/**" }]
+    },
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://spliceproduction.s3.*.amazonaws.com/**" },
+        { "url": "https://surfaces-graphql.splice.com/**" }
+      ]
+    }
+  ]
+}

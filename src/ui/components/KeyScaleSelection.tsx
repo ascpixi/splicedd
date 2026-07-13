@@ -1,4 +1,4 @@
-import { Button, Link } from "@nextui-org/react";
+import { Button, Link } from "@heroui/react";
 import { ChordType, MusicKey } from "../../splice/entities";
 
 export default function KeyScaleSelection({
@@ -17,8 +17,7 @@ export default function KeyScaleSelection({
     className: string
   ) {
     return <Button
-      color={value == selectedValue ? "primary" : "default"}
-      variant={value == selectedValue ? "solid" : "bordered"}
+      variant={value == selectedValue ? "primary" : "outline"}
       onClick={() => setter(value == selectedValue ? null : value)}
       className={className}
     >{display}</Button>

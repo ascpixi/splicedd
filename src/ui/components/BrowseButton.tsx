@@ -1,5 +1,5 @@
-import { Button, ButtonProps } from "@nextui-org/react";
-import { open } from "@tauri-apps/api/dialog";
+import { Button, ButtonProps } from "@heroui/react";
+import { open } from "@tauri-apps/plugin-dialog";
 
 /**
  * Renders a button which, when clicked, will prompt the user to select a file-system entry.

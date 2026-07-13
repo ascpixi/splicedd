@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 
 /**
  * Writes a file to the path retriveved by combining `baseDir` and `relativePath`.
@@ -34,4 +34,3 @@ export async function createPlaceholder(baseDir: string, relativePath: string) {
     relativePath
   });
 }
-
