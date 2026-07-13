@@ -1,5 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { fetch } from "@tauri-apps/plugin-http";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { IN_TAURI } from "../../native";
+
+// The Tauri HTTP client bypasses CORS, but only exists inside the Tauri shell.
+const fetch = IN_TAURI ? tauriFetch : window.fetch.bind(window);
 
 /** The flat line shown in place of a waveform that hasn't loaded yet. */
 const EMPTY_WAVEFORM: number[] = new Array(64).fill(0);
@@ -57,7 +61,13 @@ export default function Waveform(
 
       observer.disconnect();
 
-      const resp = await fetch(src);
+      const resp = await fetch(src).catch(err => {
+        console.error("failed to fetch waveform:", err);
+        return null;
+      });
+
+      if (resp == null)
+        return;
 
       // Splice serves these gzipped, but the plugin-http client doesn't always
       // transparently decompress them like a browser fetch would.
@@ -92,12 +102,25 @@ export default function Waveform(
     onSeek(Math.min(Math.max((ev.clientX - rect.left) / rect.width, 0), 1));
   }
 
+  function handleKeyDown(ev: React.KeyboardEvent<HTMLDivElement>) {
+    if (waveform == null)
+      return;
+
+    if (ev.key == "ArrowLeft" || ev.key == "ArrowRight") {
+      ev.preventDefault();
+      const delta = ev.key == "ArrowLeft" ? -0.05 : 0.05;
+      onSeek(Math.min(Math.max(progress + delta, 0), 1));
+    }
+  }
+
   return (
     <div ref={container}
       onClick={handleClick}
-      className={`cursor-pointer ${className ?? ""}`}
+      onKeyDown={handleKeyDown}
+      className={`cursor-pointer transition-opacity hover:opacity-80 ${className ?? ""}`}
       data-draggable="false"
       role="slider"
+      tabIndex={0}
       aria-label="Seek within sample"
       aria-valuemin={0} aria-valuemax={1} aria-valuenow={progress}
     >

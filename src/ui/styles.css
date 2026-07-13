@@ -13,4 +13,45 @@ html, body {
 body {
   background-image: url("img/bg-gradient.png");
   background-position: center;
+  background-size: cover;
+}
+
+/*
+  Restyle form fields (the search input and select triggers) to match outline
+  buttons: transparent background with a subtle border instead of a solid fill.
+  This keeps every control in the toolbar visually identical. Unlayered, so it
+  wins over HeroUI's @layer'd theme.
+*/
+:root {
+  --field-background: transparent;
+  --field-border: var(--border);
+  --field-border-width: var(--border-width);
+  --field-shadow: 0 0 0 0 transparent;
+  --field-hover: color-mix(in srgb, var(--default) 60%, transparent);
+}
+
+.dark {
+  --field-background: #121212;
+  --field-hover: color-mix(in oklab, #121212 92%, var(--foreground) 8%);
+}
+
+/*
+  With field borders enabled, input group prefixes draw a separator line
+  between themselves and the input. All our prefixes are lone icons, where
+  the separator just looks like clutter.
+*/
+.input-group__prefix {
+  border-right-color: transparent;
+}
+
+/* Hide the browser's spin buttons on number inputs (e.g. the BPM filter);
+   they are too small to be useful and clutter the compact fields. */
+input[type="number"] {
+  appearance: textfield;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
 }

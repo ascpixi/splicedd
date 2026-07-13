@@ -1,7 +1,5 @@
 import { Chip, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, Tooltip, TooltipContent, TooltipTrigger } from "@heroui/react";
-import { ClockCircleLinearIcon, ClockSquareBoldIcon } from '@heroui/shared-icons'
-import { MusicalNoteIcon } from "@heroicons/react/20/solid";
-import { PlayIcon, StopIcon } from "@heroicons/react/20/solid";
+import { Clock, Metronome, Music2, Play, Square } from "lucide-react";
 
 import { fetch } from "@tauri-apps/plugin-http";
 import { useEffect, useRef, useState } from "react";
@@ -94,8 +92,11 @@ export default function SampleListEntry(
       return;
 
     setFgLoading(true);
-    await ensureAudioDecoded();
-    setFgLoading(false);
+    try {
+      await ensureAudioDecoded();
+    } finally {
+      setFgLoading(false);
+    }
 
     audio.src = URL.createObjectURL(
       new Blob([decodedSample.current!], { "type": "audio/mpeg" })
@@ -108,7 +109,12 @@ export default function SampleListEntry(
     if (playing)
       return;
 
-    await ensurePlayable();
+    try {
+      await ensurePlayable();
+    } catch (err) {
+      console.error("failed to load sample preview:", err);
+      return;
+    }
 
     audio.play();
     setPlaying(true);
@@ -119,7 +125,14 @@ export default function SampleListEntry(
   async function handleSeek(target: number) {
     if (!playing) {
       ctx.cancellation?.();
-      await ensurePlayable();
+
+      try {
+        await ensurePlayable();
+      } catch (err) {
+        console.error("failed to load sample preview:", err);
+        return;
+      }
+
       audio.play();
       setPlaying(true);
       ctx.setCancellation(() => stop);
@@ -162,97 +175,117 @@ export default function SampleListEntry(
     };
 
     setFgLoading(true);
-    await ensureAudioDecoded();
+    try {
+      await ensureAudioDecoded();
 
-    if (!await checkFileExists(cfg().sampleDir, samplePath)) {
-      if (cfg().placeholders) {
-        await createPlaceholder(cfg().sampleDir, samplePath);
-        startDrag(dragParams);
-      }
+      if (!await checkFileExists(cfg().sampleDir, samplePath)) {
+        if (cfg().placeholders) {
+          await createPlaceholder(cfg().sampleDir, samplePath);
+          startDrag(dragParams);
+        }
 
-      const actx = new AudioContext();
+        const actx = new AudioContext();
 
-      // decodeAudioData detaches the buffer we give it, so pass a copy to
-      // keep the decoded sample usable for playback afterwards.
-      const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
-      const channels: Float32Array[] = [];
+        // decodeAudioData detaches the buffer we give it, so pass a copy to
+        // keep the decoded sample usable for playback afterwards.
+        const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
+        const channels: Float32Array[] = [];
 
-      if (samples.length < 60 * 44100) {
-        for (let i = 0; i < samples.numberOfChannels; i++) {
-          const chan = samples.getChannelData(i);
+        if (samples.length < 60 * 44100) {
+          for (let i = 0; i < samples.numberOfChannels; i++) {
+            const chan = samples.getChannelData(i);
 
-          const start = 1200;
-          const end = ((sample.duration / 1000) * samples.sampleRate) + start;
+            const start = 1200;
+            const end = ((sample.duration / 1000) * samples.sampleRate) + start;
 
-          channels.push(chan.subarray(start, end));
+            channels.push(chan.subarray(start, end));
+          }
+        } else {
+          // processing big samples may result in memory allocation errors (it sure did for me!!)
+          console.warn(`big boi detected of ${samples.length} samples - not pre-processing!`);
+        }
+
+        await writeSampleFile(cfg().sampleDir, samplePath, wav.encode(channels as unknown as ArrayBuffer[], {
+          bitDepth: 16,
+          sampleRate: samples.sampleRate
+        }));
+
+        if (!cfg().placeholders) {
+          startDrag(dragParams);
         }
       } else {
-        // processing big samples may result in memory allocation errors (it sure did for me!!)
-        console.warn(`big boi detected of ${samples.length} samples - not pre-processing!`);
-      }
-
-      await writeSampleFile(cfg().sampleDir, samplePath, wav.encode(channels as unknown as ArrayBuffer[], {
-        bitDepth: 16,
-        sampleRate: samples.sampleRate
-      }));
-
-      if (!cfg().placeholders) {
         startDrag(dragParams);
       }
-
+    } catch (err) {
+      console.error("failed to prepare sample for dragging:", err);
+    } finally {
       setFgLoading(false);
-    } else {
-      setFgLoading(false);
-      startDrag(dragParams);
     }
   }
 
   return (
     <div onMouseOver={startFetching}
-      className={`flex w-full px-4 py-2 gap-8 rounded transition-colors
+      className={`group flex w-full px-3 py-2 gap-6 rounded-2xl transition-colors
                     items-center hover:bg-surface-secondary cursor-grab select-none`}
     >
       { /* when loading, set the cursor for everything to a waiting icon */}
       {fgLoading && <style> {`* { cursor: wait }`} </style>}
 
-      { /* sample pack */}
-      <div className="flex gap-4 min-w-20">
+      { /* pack cover + play/stop control */}
+      <div className="flex items-center gap-3 shrink-0">
         <Tooltip>
           <TooltipTrigger>
             <a href={`https://splice.com/sounds/labels/${pack.permalink_base_url}`} target="_blank">
-              <img src={packCover} alt={pack.name} width={32} height={32} />
+              <img
+                src={packCover} alt={pack.name}
+                width={36} height={36}
+                className="rounded-sm object-cover"
+                draggable={false}
+              />
             </a>
           </TooltipTrigger>
           <TooltipContent>
-            <div className="flex flex-col gap-2 p-4">
-              <img src={packCover} alt={pack.name} width={128} height={128}></img>
-              <h1>{pack.name}</h1>
+            <div className="flex flex-col gap-2 p-3 max-w-40">
+              <img src={packCover} alt={pack.name} width={128} height={128} className="rounded-lg" />
+              <span className="text-sm font-medium">{pack.name}</span>
             </div>
           </TooltipContent>
         </Tooltip>
 
-        <div onClick={handlePlayClick} className="cursor-pointer w-8">
+        <button
+          type="button"
+          onClick={handlePlayClick}
+          aria-label={playing ? "Stop playback" : "Play sample"}
+          data-draggable="false"
+          className={`flex items-center justify-center w-8 h-8 rounded-full shrink-0
+                      cursor-pointer transition-colors hover:bg-surface-tertiary
+                      ${playing ? "text-accent" : "text-current"}`}
+        >
           {fgLoading
-            ? <ProgressCircle aria-label="Loading sample..." className="h-8" isIndeterminate>
+            ? <ProgressCircle aria-label="Loading sample..." className="h-6" isIndeterminate>
                 <ProgressCircleTrack>
                   <ProgressCircleTrackCircle />
                   <ProgressCircleFillCircle />
                 </ProgressCircleTrack>
               </ProgressCircle>
-            : playing ? <StopIcon /> : <PlayIcon />}
-        </div>
+            : playing
+              ? <Square className="size-4" fill="currentColor" />
+              : <Play className="size-4" fill="currentColor" />}
+        </button>
       </div>
 
       { /* sample name + tags */}
-      <div className="flex-1 min-w-0" onMouseDown={handleDrag}>
-        <div className="flex gap-1 max-w-[50vw] overflow-clip">
-          {sample.name.split("/").pop()}
-          <div className="text-muted">({sample.asset_category_slug})</div>
+      <div className="flex-1 min-w-0 space-y-1" onMouseDown={handleDrag}>
+        <div className="flex items-baseline gap-2 min-w-0">
+          <span className="truncate">{sample.name.split("/").pop()}</span>
+          <span className="text-sm text-muted shrink-0">
+            {sample.asset_category_slug == "oneshot" ? "one-shot" : "loop"}
+          </span>
         </div>
 
-        <div className="flex gap-1">{sample.tags.map(x => (
+        <div className="flex gap-1 overflow-hidden">{sample.tags.map(x => (
           <Chip key={x.uuid}
-            size="sm" style={{ cursor: "pointer" }}
+            size="sm" className="cursor-pointer shrink-0"
             onClick={() => onTagClick(x)}
             data-draggable="false"
           >
@@ -271,24 +304,26 @@ export default function SampleListEntry(
         />}
 
       { /* other metadata */}
-      <div className="grid grid-cols-3 gap-2 w-72 shrink-0" onMouseDown={handleDrag}>
-        <div className="flex items-center gap-2 font-semibold text-muted whitespace-nowrap">
-          <MusicalNoteIcon className="w-4 shrink-0" />
+      <div className="grid grid-cols-3 gap-2 w-64 shrink-0 text-sm text-muted tabular-nums"
+        onMouseDown={handleDrag}
+      >
+        <div className="flex items-center gap-1.5 whitespace-nowrap" title="Key">
+          <Music2 className="size-4 shrink-0" />
           <span>
             {sample.key != null
               ? `${sample.key.toUpperCase()}${getChordTypeDisplay(sample.chord_type)}`
-              : "--"}
+              : "—"}
           </span>
         </div>
 
-        <div className="flex items-center gap-2 font-semibold text-muted whitespace-nowrap">
-          <ClockCircleLinearIcon className="shrink-0" />
+        <div className="flex items-center gap-1.5 whitespace-nowrap" title="Duration">
+          <Clock className="size-4 shrink-0" />
           <span>{`${(sample.duration / 1000).toFixed(2)}s`}</span>
         </div>
 
-        <div className="flex items-center gap-2 font-semibold text-muted whitespace-nowrap">
-          <ClockSquareBoldIcon className="shrink-0" />
-          <span>{sample.bpm != null ? `${sample.bpm} BPM` : "--"}</span>
+        <div className="flex items-center gap-1.5 whitespace-nowrap" title="Tempo">
+          <Metronome className="size-4 shrink-0" />
+          <span>{sample.bpm != null ? `${sample.bpm} BPM` : "—"}</span>
         </div>
       </div>
     </div>

@@ -14,7 +14,9 @@
       {
         "title": "Splicedd",
         "width": 1200,
-        "height": 600
+        "height": 600,
+        "minWidth": 980,
+        "minHeight": 480
       }
     ],
     "security": {
