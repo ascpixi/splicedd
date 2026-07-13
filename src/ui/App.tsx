@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Button, ListBox, ListBoxItem, ListBoxItemIndicator, ModalBackdrop, ModalCloseTrigger, ModalContainer, ModalDialog, Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationNextIcon, PaginationPrevious, PaginationPreviousIcon, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, useOverlayState } from "@heroui/react";
-import { InputGroup, InputGroupInput, InputGroupPrefix, InputGroupSuffix, Label, Modal, Popover, PopoverArrow, PopoverContent, PopoverDialog, Radio, RadioControl, RadioGroup, RadioIndicator, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue, TextField } from "@heroui/react";
+import { InputGroup, InputGroupInput, InputGroupPrefix, Modal, Popover, PopoverArrow, PopoverContent, PopoverDialog, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue } from "@heroui/react";
 import { SearchIcon, ChevronDownIcon } from '@heroui/shared-icons'
 import { WrenchIcon } from "@heroicons/react/20/solid";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -12,6 +12,7 @@ import { ChordType, MusicKey, SpliceSampleType, SpliceSortBy, SpliceTag } from "
 import SampleListEntry from "./components/SampleListEntry";
 import SettingsModalContent from "./components/SettingsModalContent";
 import KeyScaleSelection from "./components/KeyScaleSelection";
+import BpmSelection, { BpmFilter, BpmFilterType } from "./components/BpmSelection";
 import { SamplePlaybackCancellation, SamplePlaybackContext } from "./playback";
 
 /**
@@ -72,12 +73,9 @@ function App() {
     defaultOpen: !cfg().configured
   });
 
-  const [bpmType, setBpmType] = useState<"exact" | "range">("exact");
-  const [bpm, setBpm] = useState<{
-    minBpm?: number,
-    maxBpm?: number,
-    bpm?: string
-  }>();
+  const [bpmType, setBpmType] = useState<BpmFilterType>("exact");
+  const [bpm, setBpm] = useState<BpmFilter>();
+  const [bpmOpen, setBpmOpen] = useState(false);
 
   const [query, setQuery] = useState("");
 
@@ -282,9 +280,11 @@ function App() {
           placeholder="Instruments"
           value={Array.from(instruments)}
           onChange={x => setInstruments(new Set(x as string[]))}
+          className="w-44 shrink-0"
+          fullWidth
         >
-          <SelectTrigger onPress={ensureContraintsGathered}>
-            <SelectValue />
+          <SelectTrigger onPress={ensureContraintsGathered} className="max-w-full">
+            <SelectValue className="truncate" />
             <SelectIndicator />
           </SelectTrigger>
           <SelectPopover>
@@ -299,9 +299,11 @@ function App() {
           placeholder="Genres"
           value={Array.from(genres)}
           onChange={x => setGenres(new Set(x as string[]))}
+          className="w-44 shrink-0"
+          fullWidth
         >
-          <SelectTrigger onPress={ensureContraintsGathered}>
-            <SelectValue />
+          <SelectTrigger onPress={ensureContraintsGathered} className="max-w-full">
+            <SelectValue className="truncate" />
             <SelectIndicator />
           </SelectTrigger>
           <SelectPopover>
@@ -316,10 +318,11 @@ function App() {
           placeholder="Tags"
           value={tags.map(x => x.uuid)}
           onChange={x => updateTagState(new Set(x as string[]))}
-          className="w-1/2"
+          className="w-1/2 min-w-0"
+          fullWidth
         >
-          <SelectTrigger>
-            <SelectValue />
+          <SelectTrigger className="max-w-full">
+            <SelectValue className="truncate" />
             <SelectIndicator />
           </SelectTrigger>
           <SelectPopover>
@@ -349,7 +352,7 @@ function App() {
           </PopoverContent>
         </Popover>
 
-        <Popover>
+        <Popover isOpen={bpmOpen} onOpenChange={setBpmOpen}>
           <Button variant="outline" className="w-96">
             { (bpmType == "exact" && bpm?.bpm
                 ? `${bpm?.bpm} BPM`
@@ -363,65 +366,20 @@ function App() {
 
           <PopoverContent placement="bottom">
             <PopoverArrow />
-            <PopoverDialog className="p-8 flex flex-col items-start justify-start">
-              <RadioGroup
-                aria-label="BPM filter type"
-                value={bpmType}
-                onChange={v => setBpmType(v as "exact" | "range")}
-              >
-                <Radio value="exact">
-                  <RadioControl><RadioIndicator /></RadioControl>
-                  Exact
-                </Radio>
-                <Radio value="range">
-                  <RadioControl><RadioIndicator /></RadioControl>
-                  Range
-                </Radio>
-              </RadioGroup>
-
-              <br/>
-
-              {
-                bpmType == "exact" ? (
-                  <div>
-                    <TextField
-                      value={bpm?.bpm?.toString() ?? ""}
-                      onChange={v => setBpm({ ...bpm, bpm: v })}
-                    >
-                      <Label>BPM</Label>
-                      <InputGroup>
-                        <InputGroupInput type="number" placeholder="(tempo)" />
-                      </InputGroup>
-                    </TextField>
-                  </div>
-                ) : (
-                  <div className="flex flex-col align-middle justify-center items-center gap-2">
-                    <TextField
-                      value={bpm?.minBpm?.toString() ?? ""}
-                      onChange={v => setBpm({ ...bpm, minBpm: parseInt(v) })}
-                    >
-                      <Label>Minimum</Label>
-                      <InputGroup>
-                        <InputGroupInput type="number" placeholder="(tempo)" />
-                        <InputGroupSuffix>BPM</InputGroupSuffix>
-                      </InputGroup>
-                    </TextField>
-
-                    <div className="align-middle">to</div>
-
-                    <TextField
-                      value={bpm?.maxBpm?.toString() ?? ""}
-                      onChange={v => setBpm({ ...bpm, maxBpm: parseInt(v) })}
-                    >
-                      <Label>Maximum</Label>
-                      <InputGroup>
-                        <InputGroupInput type="number" placeholder="(tempo)" />
-                        <InputGroupSuffix>BPM</InputGroupSuffix>
-                      </InputGroup>
-                    </TextField>
-                  </div>
-                )
-              }
+            <PopoverDialog className="p-6">
+              <BpmSelection
+                bpmType={bpmType}
+                bpm={bpm}
+                onSave={(type, newBpm) => {
+                  setBpmType(type);
+                  setBpm(newBpm);
+                  setBpmOpen(false);
+                }}
+                onClear={() => {
+                  setBpm(undefined);
+                  setBpmOpen(false);
+                }}
+              />
             </PopoverDialog>
           </PopoverContent>
         </Popover>

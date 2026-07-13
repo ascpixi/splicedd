@@ -6,6 +6,7 @@
     "core:default",
     "shell:allow-open",
     "dialog:default",
+    "drag:default",
     {
       "identifier": "fs:allow-exists",
       "allow": [{ "path": "$APPCONFIG/**" }]
@@ -26,7 +27,8 @@
       "identifier": "http:default",
       "allow": [
         { "url": "https://spliceproduction.s3.*.amazonaws.com/**" },
-        { "url": "https://surfaces-graphql.splice.com/**" }
+        { "url": "https://*.amazonaws.com/spliceblob.splice.com/**" },
+        { "url": "https://*.splice.com/**" }
       ]
     }
   ]

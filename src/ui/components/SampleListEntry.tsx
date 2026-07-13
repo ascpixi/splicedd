@@ -4,7 +4,7 @@ import { MusicalNoteIcon } from "@heroicons/react/20/solid";
 import { PlayIcon, StopIcon } from "@heroicons/react/20/solid";
 
 import { fetch } from "@tauri-apps/plugin-http";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
 import * as wav from "node-wav";
@@ -16,6 +16,7 @@ import { SamplePlaybackContext } from "../playback";
 import { SpliceTag } from "../../splice/entities";
 import { SpliceSample } from "../../splice/api";
 import { decodeSpliceAudio } from "../../splice/decoder";
+import Waveform from "./Waveform";
 
 const getChordTypeDisplay = (type: string | null) =>
   type == null ? "" : type == "major" ? " Major" : " Minor";
@@ -34,31 +35,71 @@ export default function SampleListEntry(
 ) {
   const [fgLoading, setFgLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
-  const audio = document.createElement("audio");
+  const [progress, setProgress] = useState(0);
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  if (audioRef.current == null) {
+    audioRef.current = document.createElement("audio");
+  }
+
+  const audio = audioRef.current;
 
   const pack = sample.parents.items[0];
   const packCover = pack
     ? pack.files.find(x => x.asset_file_type_slug == "cover_image")?.url
     : "img/missing-cover.png";
 
-  let decodedSample: Uint8Array<ArrayBuffer> | null = null;
+  const waveformUrl = sample.files.find(x => x.asset_file_type_slug == "waveform")?.url;
 
-  let fetchAhead: Promise<Response> | null = null;
+  const decodedSample = useRef<Uint8Array<ArrayBuffer> | null>(null);
+
+  const fetchAhead = useRef<Promise<Response> | null>(null);
   function startFetching() {
-    if (fetchAhead != null)
+    if (fetchAhead.current != null)
       return;
 
     const file = sample.files.find(x => x.asset_file_type_slug == "preview_mp3")!;
 
-    fetchAhead = fetch(file.url);
+    fetchAhead.current = fetch(file.url);
   }
 
-  audio.onended = () => setPlaying(false);
+  audio.onended = () => {
+    setPlaying(false);
+    setProgress(0);
+  };
+
+  // While a sample is playing, keep its waveform's progress marker in
+  // sync with the audio element.
+  useEffect(() => {
+    if (!playing)
+      return;
+
+    let raf = requestAnimationFrame(function tick() {
+      setProgress(audio.duration > 0 ? audio.currentTime / audio.duration : 0);
+      raf = requestAnimationFrame(tick);
+    });
+
+    return () => cancelAnimationFrame(raf);
+  }, [playing]);
 
   function stop() {
     audio.pause();
     audio.currentTime = 0;
     setPlaying(false);
+    setProgress(0);
+  }
+
+  async function ensurePlayable() {
+    if (audio.src != "")
+      return;
+
+    setFgLoading(true);
+    await ensureAudioDecoded();
+    setFgLoading(false);
+
+    audio.src = URL.createObjectURL(
+      new Blob([decodedSample.current!], { "type": "audio/mpeg" })
+    );
   }
 
   async function handlePlayClick() {
@@ -67,15 +108,7 @@ export default function SampleListEntry(
     if (playing)
       return;
 
-    if (audio.src == "") {
-      setFgLoading(true);
-      await ensureAudioDecoded();
-      setFgLoading(false);
-
-      audio.src = URL.createObjectURL(
-        new Blob([decodedSample!], { "type": "audio/mpeg" })
-      );
-    }
+    await ensurePlayable();
 
     audio.play();
     setPlaying(true);
@@ -83,17 +116,32 @@ export default function SampleListEntry(
     ctx.setCancellation(() => stop);
   }
 
+  async function handleSeek(target: number) {
+    if (!playing) {
+      ctx.cancellation?.();
+      await ensurePlayable();
+      audio.play();
+      setPlaying(true);
+      ctx.setCancellation(() => stop);
+    }
+
+    // The audio metadata might not be loaded yet right after setting the
+    // source, so we compute the seek time from the sample's known duration.
+    audio.currentTime = target * (sample.duration / 1000);
+    setProgress(target);
+  }
+
   async function ensureAudioDecoded() {
-    if (decodedSample != null)
+    if (decodedSample.current != null)
       return;
 
-    if (fetchAhead == null) {
+    if (fetchAhead.current == null) {
       startFetching();
     }
 
-    const resp = await fetchAhead!;
+    const resp = await fetchAhead.current!;
     const data = await resp.arrayBuffer();
-    decodedSample = decodeSpliceAudio(new Uint8Array(data));
+    decodedSample.current = decodeSpliceAudio(new Uint8Array(data));
   }
 
   const sanitizePath = (x: string) => x.replace(/[<>:"|?* ]/g, "_");
@@ -124,7 +172,9 @@ export default function SampleListEntry(
 
       const actx = new AudioContext();
 
-      const samples = await actx.decodeAudioData(decodedSample!.buffer);
+      // decodeAudioData detaches the buffer we give it, so pass a copy to
+      // keep the decoded sample usable for playback afterwards.
+      const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
       const channels: Float32Array[] = [];
 
       if (samples.length < 60 * 44100) {
@@ -194,7 +244,7 @@ export default function SampleListEntry(
       </div>
 
       { /* sample name + tags */}
-      <div className="grow" onMouseDown={handleDrag}>
+      <div className="flex-1 min-w-0" onMouseDown={handleDrag}>
         <div className="flex gap-1 max-w-[50vw] overflow-clip">
           {sample.name.split("/").pop()}
           <div className="text-muted">({sample.asset_category_slug})</div>
@@ -211,26 +261,35 @@ export default function SampleListEntry(
         ))}</div>
       </div>
 
-      { /* other metadata */}
-      <div className="flex gap-8" onMouseDown={handleDrag}>
-        {sample.key != null ?
-          <div className="flex items-center gap-2 font-semibold text-muted">
-            <MusicalNoteIcon className="w-4" />
-            <span>{`${sample.key.toUpperCase()}${getChordTypeDisplay(sample.chord_type)}`}</span>
-          </div>
-          : <></>}
+      { /* waveform preview */}
+      {waveformUrl &&
+        <Waveform
+          src={waveformUrl}
+          progress={progress}
+          onSeek={handleSeek}
+          className="w-40 h-10 shrink-0"
+        />}
 
-        <div className="flex items-center gap-2 font-semibold text-muted">
-          <ClockCircleLinearIcon />
+      { /* other metadata */}
+      <div className="grid grid-cols-3 gap-2 w-72 shrink-0" onMouseDown={handleDrag}>
+        <div className="flex items-center gap-2 font-semibold text-muted whitespace-nowrap">
+          <MusicalNoteIcon className="w-4 shrink-0" />
+          <span>
+            {sample.key != null
+              ? `${sample.key.toUpperCase()}${getChordTypeDisplay(sample.chord_type)}`
+              : "--"}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 font-semibold text-muted whitespace-nowrap">
+          <ClockCircleLinearIcon className="shrink-0" />
           <span>{`${(sample.duration / 1000).toFixed(2)}s`}</span>
         </div>
 
-        {sample.bpm != null ?
-          <div className="flex items-center gap-2 font-semibold text-muted">
-            <ClockSquareBoldIcon />
-            <span>{`${sample.bpm} BPM`}</span>
-          </div>
-          : <></>}
+        <div className="flex items-center gap-2 font-semibold text-muted whitespace-nowrap">
+          <ClockSquareBoldIcon className="shrink-0" />
+          <span>{sample.bpm != null ? `${sample.bpm} BPM` : "--"}</span>
+        </div>
       </div>
     </div>
   );
