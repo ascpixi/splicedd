@@ -256,7 +256,7 @@ export default function SampleListEntry(
             <div className="flex flex-col gap-2 p-3 max-w-40">
               <img src={packCover} alt={pack.name} width={128} height={128} className="rounded-lg" />
               <span className="text-sm font-medium">{pack.name}</span>
-              <span className="text-xs text-muted">Click to show samples from this pack</span>
+              <span className="text-xs text-muted text-balance">Click to show samples from this pack</span>
             </div>
           </TooltipContent>
         </Tooltip>

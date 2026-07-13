@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Button, ListBox, ListBoxItem, ListBoxItemIndicator, ModalBackdrop, ModalCloseTrigger, ModalContainer, ModalDialog, Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationNextIcon, PaginationPrevious, PaginationPreviousIcon, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, ToggleButton, useOverlayState } from "@heroui/react";
-import { InputGroup, InputGroupInput, InputGroupPrefix, Modal, Popover, PopoverContent, PopoverDialog, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue } from "@heroui/react";
-import { ArrowUpDown, ChevronDown, Disc3, EllipsisVertical, Guitar, Layers, Metronome, Music2, Search, Wrench, X } from "lucide-react";
+import { InputGroup, InputGroupInput, InputGroupPrefix, InputGroupSuffix, Modal, Popover, PopoverContent, PopoverDialog, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue } from "@heroui/react";
+import { ArrowUpDown, ChevronDown, Disc3, EllipsisVertical, Guitar, Layers, Metronome, MoveRight, Music2, Repeat, Search, Wrench, X } from "lucide-react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cfg } from "../config";
 import { SpliceSample, SpliceSamplePack, SpliceSearchResponse, createSearchRequest } from "../splice/api";
@@ -88,12 +88,11 @@ function App() {
   const [query, setQuery] = useState("");
 
   const [results, setResults] = useState<SpliceSample[]>([]);
-  const [resultCount, setResultCount] = useState(0);
   const resultContainer = useRef<HTMLDivElement | null>(null);
 
   const [queryTimer, setQueryTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
 
-  const [sortBy, setSortBy] = useState<SpliceSortBy>("relevance");
+  const [sortBy, setSortBy] = useState<SpliceSortBy>("popularity");
   const [sampleType, setSampleType] = useState<SpliceSampleType | "any">("any")
 
   const [knownInstruments, setKnownInstruments] = useState<{name: string, uuid: string}[]>([]);
@@ -145,6 +144,14 @@ function App() {
     cancellation: smplCancellation,
     setCancellation: smplSetCancellation
   }
+
+  // Stop any playing sample when the window loses focus (e.g. the user tabs
+  // away or drags a sample into their DAW).
+  useEffect(() => {
+    const stopOnBlur = () => smplCancellation?.();
+    window.addEventListener("blur", stopOnBlur);
+    return () => window.removeEventListener("blur", stopOnBlur);
+  }, [smplCancellation]);
 
   function ensureContraintsGathered() {
     if (knownInstruments.length == 0 || knownGenres.length == 0) {
@@ -257,7 +264,6 @@ function App() {
       const data = respData.data.assetsSearch;
 
       setResults(data.items);
-      setResultCount(data.response_metadata.records);
 
       setCurrentPage(resetPage ? 1 : data.pagination_metadata.currentPage);
       setTotalPages(data.pagination_metadata.totalPages);
@@ -311,12 +317,23 @@ function App() {
             onKeyDown={handleSearchKeyDown}
             onChange={handleSearchInput}
           />
+          { searchLoading &&
+            <InputGroupSuffix>
+              <ProgressCircle aria-label="Loading results..." isIndeterminate className="size-5">
+                <ProgressCircleTrack>
+                  <ProgressCircleTrackCircle />
+                  <ProgressCircleFillCircle />
+                </ProgressCircleTrack>
+              </ProgressCircle>
+            </InputGroupSuffix>
+          }
         </InputGroup>
 
         <Select
           aria-label="Sort by"
           value={sortBy}
           onChange={v => setSortBy(v as SpliceSortBy)}
+          className="w-48"
         >
           <SelectTrigger>
             <ArrowUpDown className="size-4 me-2 self-center shrink-0 text-muted" />
@@ -442,14 +459,24 @@ function App() {
         >
           <SelectTrigger>
             <Layers className="size-4 me-2 self-center shrink-0 text-muted" />
-            <SelectValue />
+            { /* Render only the label here; the per-item icons belong in the dropdown. */ }
+            <SelectValue>{({ selectedText }) => selectedText}</SelectValue>
             <SelectIndicator />
           </SelectTrigger>
           <SelectPopover>
             <ListBox>
-              <ListBoxItem id="any" textValue="Any">Any<ListBoxItemIndicator /></ListBoxItem>
-              <ListBoxItem id="oneshot" textValue="One-Shots">One-Shots<ListBoxItemIndicator /></ListBoxItem>
-              <ListBoxItem id="loop" textValue="Loops">Loops<ListBoxItemIndicator /></ListBoxItem>
+              <ListBoxItem id="any" textValue="Any">
+                <span className="size-4 shrink-0" aria-hidden="true" />
+                Any<ListBoxItemIndicator />
+              </ListBoxItem>
+              <ListBoxItem id="oneshot" textValue="One-Shots">
+                <MoveRight className="size-4 shrink-0 text-muted" />
+                One-Shots<ListBoxItemIndicator />
+              </ListBoxItem>
+              <ListBoxItem id="loop" textValue="Loops">
+                <Repeat className="size-4 shrink-0 text-muted" />
+                Loops<ListBoxItemIndicator />
+              </ListBoxItem>
             </ListBox>
           </SelectPopover>
         </Select>
@@ -458,7 +485,7 @@ function App() {
       { (query.length > 0 || filtersActive) && knownTags.length > 0 &&
         <div className="flex items-start gap-2">
           { /* Selected tags are pinned to the front; the rest follow, most popular first. */ }
-          <div className={`flex-1 min-w-0 flex flex-wrap gap-2 ${tagsExpanded ? "" : "h-9 md:h-8 overflow-hidden"}`}>
+          <div className={`flex-1 min-w-0 flex flex-wrap gap-1.5 ${tagsExpanded ? "" : "h-9 md:h-8 overflow-hidden"}`}>
             { [...tags, ...knownTags.filter(x => !tags.some(y => y.uuid == x.uuid))].map(x =>
               <ToggleButton key={x.uuid} size="sm" className={TAG_PILL_CLASSES}
                 isSelected={tags.some(y => y.uuid == x.uuid)}
@@ -528,24 +555,6 @@ function App() {
         : <div ref={resultContainer}
             className="flex-1 min-h-0 mt-2 overflow-y-auto scrollbar-thin shadow-md bg-surface p-6 rounded-3xl flex flex-col gap-6"
         >
-              <div className="flex justify-between items-start">
-                <div className="space-y-1">
-                  <h4 className="text-base font-medium">Samples</h4>
-                  <p className="text-sm text-muted">
-                    Found {resultCount.toLocaleString("en-US")} sample{resultCount != 1 ? "s" : ""} in total.
-                  </p>
-                </div>
-
-                <div> { searchLoading &&
-                  <ProgressCircle aria-label="Loading results..." isIndeterminate>
-                    <ProgressCircleTrack>
-                      <ProgressCircleTrackCircle />
-                      <ProgressCircleFillCircle />
-                    </ProgressCircleTrack>
-                  </ProgressCircle>
-                } </div>
-              </div>
-
               <div className={`flex-1 flex flex-col transition-opacity duration-150
                               ${searchLoading ? "opacity-50 pointer-events-none" : ""}`}
               >

@@ -65,7 +65,7 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
         </div>
       </ModalHeader>
 
-      <ModalBody>
+      <ModalBody className="mt-4">
         <div className="divide-y divide-separator">
           <SettingRow
             title="Sample folder"

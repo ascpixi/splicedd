@@ -66,7 +66,7 @@ export default function BpmSelection({
   );
 
   const bottomRow = () => (
-    <div className="flex justify-between items-center w-full pt-2">
+    <div className="flex justify-between items-center w-full pt-1">
       <Link href="#" onClick={onClear}>Clear</Link>
       <Button isDisabled={!canSave} onClick={handleSave}>Save</Button>
     </div>
@@ -100,8 +100,8 @@ export default function BpmSelection({
         <Tab id="exact" className="flex-1 justify-center">Exact<TabIndicator /></Tab>
       </TabList>
 
-      <TabPanel id="range">
-        <div className="flex flex-col gap-4 pt-4">
+      <TabPanel id="range" className="mt-0!">
+        <div className="flex flex-col gap-2 pt-3">
           <div className="flex justify-between items-center">
             <h4 className="text-base font-medium">Range</h4>
             <div className="flex items-center gap-2">
@@ -133,8 +133,8 @@ export default function BpmSelection({
         </div>
       </TabPanel>
 
-      <TabPanel id="exact">
-        <div className="flex flex-col gap-4 pt-4">
+      <TabPanel id="exact" className="mt-0!">
+        <div className="flex flex-col gap-2 pt-3">
           <div className="flex justify-between items-center">
             <h4 className="text-base font-medium">Exact</h4>
             {bpmInput(exactBpm, setExactBpm, "BPM")}
