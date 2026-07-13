@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 
 import { Button, ListBox, ListBoxItem, ListBoxItemIndicator, ModalBackdrop, ModalCloseTrigger, ModalContainer, ModalDialog, Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationNextIcon, PaginationPrevious, PaginationPreviousIcon, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, ToggleButton, useOverlayState } from "@heroui/react";
 import { InputGroup, InputGroupInput, InputGroupPrefix, Modal, Popover, PopoverContent, PopoverDialog, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue } from "@heroui/react";
-import { ArrowUpDown, ChevronDown, Disc3, EllipsisVertical, Guitar, Layers, Metronome, Music2, Search, Wrench } from "lucide-react";
+import { ArrowUpDown, ChevronDown, Disc3, EllipsisVertical, Guitar, Layers, Metronome, Music2, Search, Wrench, X } from "lucide-react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cfg } from "../config";
-import { SpliceSample, SpliceSearchResponse, createSearchRequest } from "../splice/api";
+import { SpliceSample, SpliceSamplePack, SpliceSearchResponse, createSearchRequest } from "../splice/api";
 import { ChordType, MusicKey, SpliceSampleType, SpliceSortBy, SpliceTag } from "../splice/entities";
 
 import SampleListEntry from "./components/SampleListEntry";
@@ -107,6 +107,8 @@ function App() {
   const [musicKey, setMusicKey] = useState<MusicKey | null>(null);
   const [chordType, setChordType] = useState<ChordType | null>(null);
 
+  const [packFilter, setPackFilter] = useState<SpliceSamplePack | null>(null);
+
   const [totalPages, setTotalPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
 
@@ -117,14 +119,15 @@ function App() {
   // when the user is filtering solely by tags, key, BPM, etc.
   const filtersActive =
     tags.length > 0 || instruments.size > 0 || genres.size > 0 ||
-    musicKey != null || chordType != null || bpm != null || sampleType != "any";
+    musicKey != null || chordType != null || bpm != null || sampleType != "any" ||
+    packFilter != null;
 
   useEffect(() => {
     updateSearch(query);
   }, [
     sortBy, bpm, bpmType, sampleType,
     instruments, genres, currentPage,
-    musicKey, chordType
+    musicKey, chordType, packFilter
   ]);
 
   const [smplCancellation, smplSetCancellation] = useState<SamplePlaybackCancellation | null>(null);
@@ -179,6 +182,15 @@ function App() {
     toggleTag(tag);
   }
 
+  function handlePackClick(pack: SpliceSamplePack) {
+    if (packFilter?.uuid == pack.uuid) {
+      return;
+    }
+
+    setPackFilter(pack);
+    setCurrentPage(1);
+  }
+
   async function updateSearch(newQuery: string, resetPage = false) {
       const payload = createSearchRequest(newQuery);
       payload.variables.sort = sortBy;
@@ -204,6 +216,11 @@ function App() {
 
       payload.variables.chord_type = chordType ?? undefined;
       payload.variables.key = musicKey ?? undefined;
+
+      if (packFilter != null) {
+        payload.variables.parent_asset_uuid = packFilter.uuid;
+        payload.variables.parent_asset_type = "pack";
+      }
 
       payload.variables.page = resetPage ? 1 : currentPage;
 
@@ -446,6 +463,39 @@ function App() {
         </div>
       }
 
+      { /* Active pack filter banner; visually distinct from the tag pills so
+           it's obvious results are narrowed down to a single pack. */ }
+      { packFilter != null &&
+        <div className="flex items-center gap-3 px-3 py-2 rounded-2xl bg-surface shadow-md">
+          <img
+            src={packFilter.files.find(x => x.asset_file_type_slug == "cover_image")?.url ?? "img/missing-cover.png"}
+            alt="" width={36} height={36}
+            className="rounded-sm object-cover shrink-0"
+            draggable={false}
+          />
+
+          <div className="flex-1 min-w-0 flex flex-col">
+            <span className="text-xs text-muted">
+              Filtering by pack
+            </span>
+            <span className="truncate font-medium">{packFilter.name}</span>
+          </div>
+
+          <button
+            type="button"
+            aria-label={`Stop filtering by ${packFilter.name}`}
+            onClick={() => {
+              setPackFilter(null);
+              setCurrentPage(1);
+            }}
+            className="flex items-center justify-center w-8 h-8 rounded-full shrink-0
+                       cursor-pointer transition-colors hover:bg-surface-tertiary"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      }
+
       {
         searchError != null
         ? <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-8">
@@ -486,7 +536,7 @@ function App() {
                               ${searchLoading ? "opacity-50 pointer-events-none" : ""}`}
               >
               { results.map(
-                x => <SampleListEntry key={x.uuid} sample={x} onTagClick={handleTagClick} ctx={pbCtx}/>
+                x => <SampleListEntry key={x.uuid} sample={x} onTagClick={handleTagClick} onPackClick={handlePackClick} ctx={pbCtx}/>
               ) }
               </div>
 

@@ -12,7 +12,7 @@ import { join } from "@tauri-apps/api/path";
 import { cfg } from "../../config";
 import { SamplePlaybackContext } from "../playback";
 import { SpliceTag } from "../../splice/entities";
-import { SpliceSample } from "../../splice/api";
+import { SpliceSample, SpliceSamplePack } from "../../splice/api";
 import { decodeSpliceAudio } from "../../splice/decoder";
 import Waveform from "./Waveform";
 
@@ -20,15 +20,17 @@ const getChordTypeDisplay = (type: string | null) =>
   type == null ? "" : type == "major" ? " Major" : " Minor";
 
 export type TagClickHandler = (tag: SpliceTag) => void;
+export type PackClickHandler = (pack: SpliceSamplePack) => void;
 
 /**
  * Provides a view describing a Splice sample.
  */
 export default function SampleListEntry(
-  { sample, ctx, onTagClick }: {
+  { sample, ctx, onTagClick, onPackClick }: {
     sample: SpliceSample,
     ctx: SamplePlaybackContext,
-    onTagClick: TagClickHandler
+    onTagClick: TagClickHandler,
+    onPackClick: PackClickHandler
   }
 ) {
   const [fgLoading, setFgLoading] = useState(false);
@@ -235,19 +237,26 @@ export default function SampleListEntry(
       <div className="flex items-center gap-3 shrink-0">
         <Tooltip>
           <TooltipTrigger>
-            <a href={`https://splice.com/sounds/labels/${pack.permalink_base_url}`} target="_blank">
+            <button
+              type="button"
+              onClick={() => onPackClick(pack)}
+              aria-label={`Show samples from ${pack.name}`}
+              data-draggable="false"
+              className="cursor-pointer"
+            >
               <img
                 src={packCover} alt={pack.name}
                 width={36} height={36}
                 className="rounded-sm object-cover"
                 draggable={false}
               />
-            </a>
+            </button>
           </TooltipTrigger>
           <TooltipContent>
             <div className="flex flex-col gap-2 p-3 max-w-40">
               <img src={packCover} alt={pack.name} width={128} height={128} className="rounded-lg" />
               <span className="text-sm font-medium">{pack.name}</span>
+              <span className="text-xs text-muted">Click to show samples from this pack</span>
             </div>
           </TooltipContent>
         </Tooltip>

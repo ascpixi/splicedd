@@ -51,7 +51,9 @@ export interface SpliceSearchRequest extends SpliceRequest<{
   asset_category_slug?: SpliceSampleType,
   page?: number,
   key?: MusicKey,
-  chord_type?: ChordType
+  chord_type?: ChordType,
+  parent_asset_uuid?: string,
+  parent_asset_type?: "pack"
 }>{}
 
 export type SpliceSearchResponse = {

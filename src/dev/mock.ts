@@ -102,8 +102,11 @@ const SAMPLES: SpliceSample[] = [
 export function mockSearch(body: string): string {
   const payload = JSON.parse(body);
   const query: string = payload.variables.filepath ?? "";
+  const parentUuid: string | undefined = payload.variables.parent_asset_uuid;
 
-  const items = SAMPLES.filter(x => x.name.toLowerCase().includes(query.toLowerCase()));
+  const items = SAMPLES
+    .filter(x => x.name.toLowerCase().includes(query.toLowerCase()))
+    .filter(x => parentUuid == null || x.parents.items[0]?.uuid == parentUuid);
 
   const response: SpliceSearchResponse = {
     data: {
