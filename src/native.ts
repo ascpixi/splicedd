@@ -1,6 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
 
 /**
+ * Whether the app is running inside the Tauri shell. When `false` (e.g. when
+ * running `yarn dev` in a plain browser for UI work), native functionality is
+ * unavailable and the app falls back to in-memory config and mock search data.
+ */
+export const IN_TAURI = "__TAURI_INTERNALS__" in window;
+
+/**
  * Writes a file to the path retriveved by combining `baseDir` and `relativePath`.
  * The path is required to end with ".wav".
  */

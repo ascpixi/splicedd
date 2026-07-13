@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
-import { Button, ListBox, ListBoxItem, ListBoxItemIndicator, ModalBackdrop, ModalCloseTrigger, ModalContainer, ModalDialog, Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationNextIcon, PaginationPrevious, PaginationPreviousIcon, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, useOverlayState } from "@heroui/react";
-import { InputGroup, InputGroupInput, InputGroupPrefix, Modal, Popover, PopoverArrow, PopoverContent, PopoverDialog, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue } from "@heroui/react";
-import { SearchIcon, ChevronDownIcon } from '@heroui/shared-icons'
-import { WrenchIcon } from "@heroicons/react/20/solid";
+import { Button, ListBox, ListBoxItem, ListBoxItemIndicator, ModalBackdrop, ModalCloseTrigger, ModalContainer, ModalDialog, Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationNextIcon, PaginationPrevious, PaginationPreviousIcon, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, ToggleButton, useOverlayState } from "@heroui/react";
+import { InputGroup, InputGroupInput, InputGroupPrefix, Modal, Popover, PopoverContent, PopoverDialog, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue } from "@heroui/react";
+import { ArrowUpDown, ChevronDown, Disc3, EllipsisVertical, Guitar, Layers, Metronome, Music2, Search, Wrench } from "lucide-react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cfg } from "../config";
 import { SpliceSample, SpliceSearchResponse, createSearchRequest } from "../splice/api";
@@ -14,6 +13,9 @@ import SettingsModalContent from "./components/SettingsModalContent";
 import KeyScaleSelection from "./components/KeyScaleSelection";
 import BpmSelection, { BpmFilter, BpmFilterType } from "./components/BpmSelection";
 import { SamplePlaybackCancellation, SamplePlaybackContext } from "./playback";
+import { IN_TAURI } from "../native";
+import { mockSearch } from "../dev/mock";
+import { FIELD_BUTTON_CLASSES, NO_PRESS_SCALE, TAG_PILL_CLASSES } from "./fieldStyles";
 
 /**
  * Runs a Splice GraphQL request through the hidden splice.com helper webview
@@ -22,6 +24,10 @@ import { SamplePlaybackCancellation, SamplePlaybackContext } from "./playback";
  * is a one-shot event round-trip correlated by a request id.
  */
 function spliceSearch(body: string): Promise<string> {
+  if (!IN_TAURI) {
+    return Promise.resolve(mockSearch(body));
+  }
+
   const id = crypto.randomUUID();
 
   return new Promise<string>((resolve, reject) => {
@@ -95,6 +101,9 @@ function App() {
   const [genres, setGenres] = useState(new Set<string>([]));
   let [tags, setTags] = useState<SpliceTag[]>([]);
 
+  const [knownTags, setKnownTags] = useState<SpliceTag[]>([]);
+  const [tagsExpanded, setTagsExpanded] = useState(false);
+
   const [musicKey, setMusicKey] = useState<MusicKey | null>(null);
   const [chordType, setChordType] = useState<ChordType | null>(null);
 
@@ -102,6 +111,13 @@ function App() {
   const [currentPage, setCurrentPage] = useState(0);
 
   const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+
+  // Results should be visible not only when a text query is entered, but also
+  // when the user is filtering solely by tags, key, BPM, etc.
+  const filtersActive =
+    tags.length > 0 || instruments.size > 0 || genres.size > 0 ||
+    musicKey != null || chordType != null || bpm != null || sampleType != "any";
 
   useEffect(() => {
     updateSearch(query);
@@ -136,7 +152,7 @@ function App() {
     }
 
     // We set a timer, as to not overload Splice with needless requests while the user is typing.
-    let selfTimer = setTimeout(() => updateSearch(ev.target.value, true), 100);
+    let selfTimer = setTimeout(() => updateSearch(ev.target.value, true), 250);
     setQueryTimer(selfTimer);
   }
 
@@ -146,8 +162,11 @@ function App() {
     }
   }
 
-  function updateTagState(selectedKeys: Set<string>) {
-    tags = tags.filter(x => Array.from(selectedKeys).some(y => x.uuid == y));
+  function toggleTag(tag: SpliceTag) {
+    tags = tags.some(x => x.uuid == tag.uuid)
+      ? tags.filter(x => x.uuid != tag.uuid)
+      : [...tags, tag];
+
     setTags(tags);
     updateSearch(query, true);
   }
@@ -157,9 +176,7 @@ function App() {
       return;
     }
 
-    tags = [...tags, tag];
-    setTags(tags);
-    updateSearch(query, true);
+    toggleTag(tag);
   }
 
   async function updateSearch(newQuery: string, resetPage = false) {
@@ -192,13 +209,20 @@ function App() {
 
       setSearchLoading(true);
 
-      // Routed through the hidden splice.com helper webview so the request clears
-      // Cloudflare Bot Management (which blocks non-browser TLS fingerprints) and
-      // Splice's CORS. A direct browser fetch from our own origin can't do this
-      // without disabling web security, which breaks Tauri v2 IPC.
-      const raw = await spliceSearch(JSON.stringify(payload));
-
-      setSearchLoading(false);
+      let raw: string;
+      try {
+        // Routed through the hidden splice.com helper webview so the request clears
+        // Cloudflare Bot Management (which blocks non-browser TLS fingerprints) and
+        // Splice's CORS. A direct browser fetch from our own origin can't do this
+        // without disabling web security, which breaks Tauri v2 IPC.
+        raw = await spliceSearch(JSON.stringify(payload));
+        setSearchError(null);
+      } catch (err) {
+        setSearchError(err instanceof Error ? err.message : String(err));
+        return;
+      } finally {
+        setSearchLoading(false);
+      }
 
       pbCtx.cancellation?.(); // stop any sample that's currently playing
 
@@ -219,10 +243,19 @@ function App() {
 
       setKnownGenres(findConstraints("Genre"));
       setKnownInstruments(findConstraints("Instrument"));
+
+      const seenTags = new Set<string>();
+      setKnownTags(
+        [...data.tag_summary]
+          .sort((a, b) => b.count - a.count)
+          .map(x => x.tag)
+          .filter(x => !seenTags.has(x.uuid) && (seenTags.add(x.uuid), true))
+          .map(x => ({ uuid: x.uuid, label: x.label }))
+      );
   }
 
   return (
-    <main className="flex flex-col gap-2 m-8 h-screen">
+    <main className="flex flex-col gap-2 h-screen p-6">
       <Modal isOpen={settings.isOpen} onOpenChange={settings.setOpen}>
         <ModalBackdrop isDismissable={false}>
           <ModalContainer size="lg">
@@ -237,7 +270,7 @@ function App() {
       <div className="flex gap-2">
         <InputGroup className="flex-1">
           <InputGroupPrefix>
-            <SearchIcon className="w-6" />
+            <Search className="size-5" />
           </InputGroupPrefix>
           <InputGroupInput
             type="text"
@@ -255,7 +288,7 @@ function App() {
           onChange={v => setSortBy(v as SpliceSortBy)}
         >
           <SelectTrigger>
-            <span className="w-20 text-sm text-muted">Sort by: </span>
+            <ArrowUpDown className="size-4 me-2 self-center shrink-0 text-muted" />
             <SelectValue />
             <SelectIndicator />
           </SelectTrigger>
@@ -269,8 +302,8 @@ function App() {
           </SelectPopover>
         </Select>
 
-        <Button isIconOnly variant="outline" aria-label="Settings" onClick={settings.open}>
-          <WrenchIcon className="w-4" />
+        <Button isIconOnly variant="outline" className={FIELD_BUTTON_CLASSES} aria-label="Settings" onClick={settings.open}>
+          <Wrench className="size-4" />
         </Button>
       </div>
 
@@ -280,10 +313,11 @@ function App() {
           placeholder="Instruments"
           value={Array.from(instruments)}
           onChange={x => setInstruments(new Set(x as string[]))}
-          className="w-44 shrink-0"
+          className="flex-1 min-w-0"
           fullWidth
         >
           <SelectTrigger onPress={ensureContraintsGathered} className="max-w-full">
+            <Guitar className="size-4 me-2 self-center shrink-0 text-muted" />
             <SelectValue className="truncate" />
             <SelectIndicator />
           </SelectTrigger>
@@ -299,10 +333,11 @@ function App() {
           placeholder="Genres"
           value={Array.from(genres)}
           onChange={x => setGenres(new Set(x as string[]))}
-          className="w-44 shrink-0"
+          className="flex-1 min-w-0"
           fullWidth
         >
           <SelectTrigger onPress={ensureContraintsGathered} className="max-w-full">
+            <Disc3 className="size-4 me-2 self-center shrink-0 text-muted" />
             <SelectValue className="truncate" />
             <SelectIndicator />
           </SelectTrigger>
@@ -313,37 +348,20 @@ function App() {
           </SelectPopover>
         </Select>
 
-        <Select aria-label="Tags"
-          selectionMode="multiple"
-          placeholder="Tags"
-          value={tags.map(x => x.uuid)}
-          onChange={x => updateTagState(new Set(x as string[]))}
-          className="w-1/2 min-w-0"
-          fullWidth
-        >
-          <SelectTrigger className="max-w-full">
-            <SelectValue className="truncate" />
-            <SelectIndicator />
-          </SelectTrigger>
-          <SelectPopover>
-            <ListBox items={tags}>
-              {(x: SpliceTag) => <ListBoxItem id={x.uuid} textValue={x.label}>{x.label}<ListBoxItemIndicator /></ListBoxItem>}
-            </ListBox>
-          </SelectPopover>
-        </Select>
-
         <Popover>
-          <Button variant="outline" className="w-96">
-            {
-              (musicKey == null && chordType == null) ? "Key"
-                : `${musicKey ?? ""}${chordType == null ? "" : chordType == "major" ? " Major" : " Minor"}`
-            }
-            <ChevronDownIcon className="w-4" />
+          <Button variant="outline" className={`${FIELD_BUTTON_CLASSES} flex-1 min-w-0 group ${NO_PRESS_SCALE}`}>
+            <Music2 className="size-4 shrink-0 text-muted" />
+            <span className="flex-1 truncate text-left">
+              {
+                (musicKey == null && chordType == null) ? "Key"
+                  : `${musicKey ?? ""}${chordType == null ? "" : chordType == "major" ? " Major" : " Minor"}`
+              }
+            </span>
+            <ChevronDown className="size-4 shrink-0 transition-transform duration-150 group-aria-expanded:rotate-180" />
           </Button>
 
           <PopoverContent placement="bottom">
-            <PopoverArrow />
-            <PopoverDialog className="flex p-8">
+            <PopoverDialog className="flex p-6">
               <KeyScaleSelection
                 onChordSet={setChordType} onKeySet={setMusicKey}
                 selectedChord={chordType} selectedKey={musicKey}
@@ -353,19 +371,21 @@ function App() {
         </Popover>
 
         <Popover isOpen={bpmOpen} onOpenChange={setBpmOpen}>
-          <Button variant="outline" className="w-96">
-            { (bpmType == "exact" && bpm?.bpm
-                ? `${bpm?.bpm} BPM`
-                : bpmType == "range" && bpm?.maxBpm && bpm.minBpm
-                  ? `${bpm.minBpm} - ${bpm.maxBpm} BPM`
-                  : "BPM"
-              )
-            }
-            <ChevronDownIcon className="w-4" />
+          <Button variant="outline" className={`${FIELD_BUTTON_CLASSES} flex-1 min-w-0 group ${NO_PRESS_SCALE}`}>
+            <Metronome className="size-4 shrink-0 text-muted" />
+            <span className="flex-1 truncate text-left">
+              { (bpmType == "exact" && bpm?.bpm
+                  ? `${bpm?.bpm} BPM`
+                  : bpmType == "range" && bpm?.maxBpm && bpm.minBpm
+                    ? `${bpm.minBpm} – ${bpm.maxBpm} BPM`
+                    : "BPM"
+                )
+              }
+            </span>
+            <ChevronDown className="size-4 shrink-0 transition-transform duration-150 group-aria-expanded:rotate-180" />
           </Button>
 
           <PopoverContent placement="bottom">
-            <PopoverArrow />
             <PopoverDialog className="p-6">
               <BpmSelection
                 bpmType={bpmType}
@@ -387,9 +407,10 @@ function App() {
         <Select aria-label="Type"
           value={sampleType}
           onChange={v => setSampleType(v as SpliceSampleType | "any")}
-          className="max-w-32"
+          className="flex-1 min-w-0"
         >
           <SelectTrigger>
+            <Layers className="size-4 me-2 self-center shrink-0 text-muted" />
             <SelectValue />
             <SelectIndicator />
           </SelectTrigger>
@@ -403,20 +424,52 @@ function App() {
         </Select>
       </div>
 
+      { (query.length > 0 || filtersActive) && knownTags.length > 0 &&
+        <div className="flex items-start gap-2">
+          { /* Selected tags are pinned to the front; the rest follow, most popular first. */ }
+          <div className={`flex-1 min-w-0 flex flex-wrap gap-2 ${tagsExpanded ? "" : "h-9 md:h-8 overflow-hidden"}`}>
+            { [...tags, ...knownTags.filter(x => !tags.some(y => y.uuid == x.uuid))].map(x =>
+              <ToggleButton key={x.uuid} size="sm" className={TAG_PILL_CLASSES}
+                isSelected={tags.some(y => y.uuid == x.uuid)}
+                onChange={() => toggleTag(x)}
+              >{x.label}</ToggleButton>
+            )}
+          </div>
+
+          <ToggleButton size="sm" isIconOnly className={TAG_PILL_CLASSES}
+            aria-label={tagsExpanded ? "Show fewer tags" : "Show all tags"}
+            isSelected={tagsExpanded}
+            onChange={setTagsExpanded}
+          >
+            <EllipsisVertical className="size-4" />
+          </ToggleButton>
+        </div>
+      }
+
       {
-        query.length > 0 && results
+        searchError != null
+        ? <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-8">
+            <img className="w-12 select-none" src="img/blob-think.png" alt="" draggable={false} />
+            <div className="space-y-1">
+              <p className="text-muted">Something went wrong while searching.</p>
+              <p className="text-sm text-muted/75 max-w-xl">{searchError}</p>
+            </div>
+          </div>
+        : (query.length > 0 || filtersActive)
         ? results.length == 0
-        ? <div className="flex flex-col items-center h-full justify-center space-y-6">
-            <img className="w-12" src="img/blob-think.png"/>
+        ? <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-8">
+            <img className="w-12 select-none" src="img/blob-think.png" alt="" draggable={false} />
             <p className="text-muted">Couldn't find anything. Try changing your query and filters.</p>
           </div>
         : <div ref={resultContainer}
-            className="my-4 mb-16 overflow-y-scroll shadow-md bg-surface p-8 rounded flex flex-col gap-8"
+            className="flex-1 min-h-0 mt-2 overflow-y-auto scrollbar-thin shadow-md bg-surface p-6 rounded-3xl flex flex-col gap-6"
         >
-              <div className="flex justify-between">
+              <div className="flex justify-between items-start">
                 <div className="space-y-1">
                   <h4 className="text-base font-medium">Samples</h4>
-                  <p className="text-sm text-muted">Found {resultCount} sample{results.length != 1 ? "s" : ""} in total.</p>
+                  <p className="text-sm text-muted">
+                    Found {resultCount.toLocaleString("en-US")} sample{resultCount != 1 ? "s" : ""} in total.
+                  </p>
                 </div>
 
                 <div> { searchLoading &&
@@ -429,44 +482,48 @@ function App() {
                 } </div>
               </div>
 
-              <div className="flex-1 flex flex-col">
+              <div className={`flex-1 flex flex-col transition-opacity duration-150
+                              ${searchLoading ? "opacity-50 pointer-events-none" : ""}`}
+              >
               { results.map(
                 x => <SampleListEntry key={x.uuid} sample={x} onTagClick={handleTagClick} ctx={pbCtx}/>
               ) }
               </div>
 
-              <div className="w-full flex justify-center">
-                <Pagination>
-                  <PaginationContent>
-                    <PaginationItem>
-                      <PaginationPrevious
-                        onClick={() => changePage(Math.max(1, currentPage - 1))}
-                        isDisabled={currentPage <= 1}
-                      >
-                        <PaginationPreviousIcon />
-                      </PaginationPrevious>
-                    </PaginationItem>
-                    {buildPageList(currentPage, totalPages).map((p, i) =>
-                      p === "ellipsis"
-                        ? <PaginationItem key={`ellipsis-${i}`}><PaginationEllipsis /></PaginationItem>
-                        : <PaginationItem key={p}>
-                            <PaginationLink isActive={p === currentPage} onClick={() => changePage(p)}>{p}</PaginationLink>
-                          </PaginationItem>
-                    )}
-                    <PaginationItem>
-                      <PaginationNext
-                        onClick={() => changePage(Math.min(totalPages, currentPage + 1))}
-                        isDisabled={currentPage >= totalPages}
-                      >
-                        <PaginationNextIcon />
-                      </PaginationNext>
-                    </PaginationItem>
-                  </PaginationContent>
-                </Pagination>
-              </div>
+              { totalPages > 1 &&
+                <div className="w-full flex justify-center">
+                  <Pagination>
+                    <PaginationContent>
+                      <PaginationItem>
+                        <PaginationPrevious
+                          onClick={() => changePage(Math.max(1, currentPage - 1))}
+                          isDisabled={currentPage <= 1}
+                        >
+                          <PaginationPreviousIcon />
+                        </PaginationPrevious>
+                      </PaginationItem>
+                      {buildPageList(currentPage, totalPages).map((p, i) =>
+                        p === "ellipsis"
+                          ? <PaginationItem key={`ellipsis-${i}`}><PaginationEllipsis /></PaginationItem>
+                          : <PaginationItem key={p}>
+                              <PaginationLink isActive={p === currentPage} onClick={() => changePage(p)}>{p}</PaginationLink>
+                            </PaginationItem>
+                      )}
+                      <PaginationItem>
+                        <PaginationNext
+                          onClick={() => changePage(Math.min(totalPages, currentPage + 1))}
+                          isDisabled={currentPage >= totalPages}
+                        >
+                          <PaginationNextIcon />
+                        </PaginationNext>
+                      </PaginationItem>
+                    </PaginationContent>
+                  </Pagination>
+                </div>
+              }
             </div>
-          : <div className="flex flex-col items-center h-full justify-center space-y-6">
-              <img className="w-12" src="img/blob-salute.png"/>
+          : <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center px-8">
+              <img className="w-12 select-none" src="img/blob-salute.png" alt="" draggable={false} />
               <p className="text-muted">Waiting for your command!</p>
             </div>
       }

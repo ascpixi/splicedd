@@ -83,7 +83,7 @@ export default function BpmSelection({
       onChange={v => onChange(parseBpmInput(v))}
       className="w-16"
     >
-      <InputGroup className="border border-border">
+      <InputGroup>
         <InputGroupInput type="number" placeholder={placeholder} />
       </InputGroup>
     </TextField>

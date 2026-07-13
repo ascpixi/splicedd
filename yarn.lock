@@ -393,11 +393,6 @@
   dependencies:
     tslib "^2.8.0"
 
-"@heroicons/react@^2.2.0":
-  version "2.2.0"
-  resolved "https://registry.yarnpkg.com/@heroicons/react/-/react-2.2.0.tgz#0c05124af50434a800773abec8d3af6a297d904b"
-  integrity sha512-LMcepvRaS9LYHJGsF0zzmgKCUim/X3N/DQKc4jepAXJ7l8QxJ1PmxJzqplF2Z3FE4PqBAIGyJAQ/w4B5dsqbtQ==
-
 "@heroui/react@^3.1.0":
   version "3.1.0"
   resolved "https://registry.yarnpkg.com/@heroui/react/-/react-3.1.0.tgz#1ca248d342ceb6799eb3b4687d819ec35529c035"
@@ -415,11 +410,6 @@
     react-aria-components "1.17.0"
     tailwind-merge "3.4.0"
     tailwind-variants "3.2.2"
-
-"@heroui/shared-icons@^2.1.10":
-  version "2.1.10"
-  resolved "https://registry.yarnpkg.com/@heroui/shared-icons/-/shared-icons-2.1.10.tgz#df53c7726d790320618530827627f71f8b8c759e"
-  integrity sha512-ePo60GjEpM0SEyZBGOeySsLueNDCqLsVL79Fq+5BphzlrBAcaKY7kUp74964ImtkXvknTxAWzuuTr3kCRqj6jg==
 
 "@heroui/styles@3.1.0":
   version "3.1.0"
@@ -1372,6 +1362,11 @@ lru-cache@^5.1.1:
   integrity sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==
   dependencies:
     yallist "^3.0.2"
+
+lucide-react@^1.24.0:
+  version "1.24.0"
+  resolved "https://registry.yarnpkg.com/lucide-react/-/lucide-react-1.24.0.tgz#5f6da7f37d9107d192e54b7654a99b3468a212c6"
+  integrity sha512-YT6mBD8lGKkg4nM39enlm94/sfJIiW0YKUT60fBy4YK8tai31ylg1VhGNWxkpSKHo9UagfnZqwIff3HTDQwXeA==
 
 magic-string@^0.30.21:
   version "0.30.21"

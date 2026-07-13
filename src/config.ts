@@ -1,6 +1,7 @@
 import { exists, readTextFile, writeTextFile, mkdir } from "@tauri-apps/plugin-fs";
 import { BaseDirectory, appConfigDir } from "@tauri-apps/api/path";
 import { useState } from "react";
+import { IN_TAURI } from "./native";
 
 /**
  * Represents the user configuration file of Splicedd.
@@ -42,6 +43,13 @@ export async function mutateCfg(values: Partial<SpliceddConfig>) {
  * Loads user configuration from the config file. Usually is called only called once on startup.
  */
 export async function loadConfig() {
+  // Outside of Tauri (plain-browser UI development) there is no filesystem;
+  // use an in-memory config and skip the first-time setup modal.
+  if (!IN_TAURI) {
+    globalCfg = { ...defaultCfg(), configured: true };
+    return;
+  }
+
   const appConfig = await appConfigDir();
   await mkdir(appConfig, { recursive: true }).catch(() => {});
 
@@ -60,6 +68,9 @@ export async function loadConfig() {
  * Synchronizes the in-memory configuration object with the config file stored on disk.
  */
 export async function saveConfig() {
+  if (!IN_TAURI)
+    return;
+
   await writeTextFile("config.json", JSON.stringify(globalCfg, null, 2), {
     baseDir: BaseDirectory.AppConfig
   });
