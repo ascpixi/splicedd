@@ -1,5 +1,5 @@
 import { Button, Link } from "@heroui/react";
-import { ChordType, MusicKey } from "../../splice/entities";
+import { ChordType, MusicKey, relativeKey } from "../../splice/entities";
 
 export default function KeyScaleSelection({
   selectedKey, selectedChord, onKeySet, onChordSet
@@ -59,7 +59,21 @@ export default function KeyScaleSelection({
         { chordButton("minor", "Minor") }
       </div>
 
-      <div className="flex justify-start pt-2">
+      { /* Swap to the relative major/minor — the key sharing the same pitches
+           (e.g. A Minor ↔ C Major). Needs both a key and a scale. */ }
+      { selectedKey != null && selectedChord != null &&
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={() => {
+            const rel = relativeKey(selectedKey, selectedChord);
+            onKeySet(rel.key);
+            onChordSet(rel.chord);
+          }}
+        >Make relative</Button>
+      }
+
+      <div className="flex items-center justify-end pt-2">
         <Link href="#" onClick={() => { onChordSet(null); onKeySet(null) }}>Clear</Link>
       </div>
     </div>
