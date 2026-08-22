@@ -4,7 +4,7 @@
 mod files;
 mod updater;
 
-use tauri::{WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 // Splice's GraphQL endpoint sits behind Cloudflare Bot Management, which rejects
 // any client whose TLS/HTTP2 fingerprint isn't a real browser (Tauri's built-in
@@ -99,6 +99,10 @@ fn main() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            // Create this before the frontend starts. The config loader and
+            // writer can then safely access config.json through the fs plugin.
+            std::fs::create_dir_all(app.path().app_config_dir()?)?;
+
             WebviewWindowBuilder::new(
                 app,
                 SPLICE_HELPER_LABEL,
