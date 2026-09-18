@@ -20,10 +20,6 @@
       "allow": [{ "path": "$APPCONFIG/**" }]
     },
     {
-      "identifier": "fs:allow-mkdir",
-      "allow": [{ "path": "$APPCONFIG/**" }]
-    },
-    {
       "identifier": "http:default",
       "allow": [
         { "url": "https://spliceproduction.s3.*.amazonaws.com/**" },

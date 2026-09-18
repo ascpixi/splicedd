@@ -1,5 +1,5 @@
-import { exists, readTextFile, writeTextFile, mkdir } from "@tauri-apps/plugin-fs";
-import { BaseDirectory, appConfigDir } from "@tauri-apps/api/path";
+import { exists, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { BaseDirectory } from "@tauri-apps/api/path";
 import { useState } from "react";
 import { IN_TAURI } from "./native";
 
@@ -19,6 +19,8 @@ export interface SpliceddConfig {
 }
 
 let globalCfg: SpliceddConfig;
+let saveQueue: Promise<void> = Promise.resolve();
+
 function defaultCfg(): SpliceddConfig {
   return {
     sampleDir: "",
@@ -56,17 +58,20 @@ export async function loadConfig() {
     return;
   }
 
-  const appConfig = await appConfigDir();
-  await mkdir(appConfig, { recursive: true }).catch(() => {});
+  globalCfg = defaultCfg();
 
-  if (!await exists("config.json", { baseDir: BaseDirectory.AppConfig })) {
-    globalCfg = defaultCfg();
-  } else {
+  try {
+    if (!await exists("config.json", { baseDir: BaseDirectory.AppConfig }))
+      return;
+
     const raw = await readTextFile("config.json", {
       baseDir: BaseDirectory.AppConfig,
     });
-
     globalCfg = { ...defaultCfg(), ...JSON.parse(raw) };
+  } catch (err) {
+    // A missing, unreadable, or malformed config must never prevent the UI
+    // from mounting. Keep the defaults and allow the next save to repair it.
+    console.error("failed to load config; using defaults:", err);
   }
 }
 
@@ -77,9 +82,18 @@ export async function saveConfig() {
   if (!IN_TAURI)
     return;
 
-  await writeTextFile("config.json", JSON.stringify(globalCfg, null, 2), {
-    baseDir: BaseDirectory.AppConfig
-  });
+  // Keep writes ordered. Settings controls can update in quick succession and
+  // concurrent writeTextFile calls can otherwise leave an older snapshot on
+  // disk after a newer one has completed.
+  const serialized = JSON.stringify(globalCfg, null, 2);
+  const write = saveQueue
+    .catch(() => {}) // a failed write must not prevent later retries
+    .then(() => writeTextFile("config.json", serialized, {
+      baseDir: BaseDirectory.AppConfig
+    }));
+
+  saveQueue = write;
+  await write;
 }
 
 /**
@@ -106,5 +120,5 @@ export function useCfgSyncedState<T>(key: keyof SpliceddConfig) {
 export function mutateCfgSync<T>(value: T, state: ConfigSyncedState<T>) {
   (globalCfg as any)[state.key] = value;
   state.setState(value);
-  saveConfig();
+  return saveConfig();
 }

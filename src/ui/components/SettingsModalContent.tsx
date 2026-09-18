@@ -37,8 +37,10 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
   const darkMode = useCfgSyncedState<boolean>("darkMode");
   const checkUpdates = useCfgSyncedState<boolean>("checkUpdates");
 
-  function closeFirstTimeSetup() {
-    mutateCfg({ configured: true });
+  async function closeFirstTimeSetup() {
+    // Do not dismiss setup until both the folder and configured flag are on
+    // disk. mutateCfg waits behind any pending folder write.
+    await mutateCfg({ configured: true });
     onClose();
   }
 
