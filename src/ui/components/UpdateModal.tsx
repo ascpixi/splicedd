@@ -69,7 +69,7 @@ export default function UpdateModal({ update, onDismiss }: {
     <Modal isOpen onOpenChange={open => { if (!open && !downloading) onDismiss(); }}>
       <ModalBackdrop>
         <ModalContainer size="lg">
-          <ModalDialog>
+          <ModalDialog className="max-h-full min-h-0">
             { !downloading && <ModalCloseTrigger /> }
 
             <ModalHeader className="flex-row items-center gap-3">
