@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
 import * as wav from "node-wav";
-import { checkFileExists, createPlaceholder, IS_WINDOWS, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
+import { checkDirExists, checkFileExists, createPlaceholder, IS_WINDOWS, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
 import { join } from "@tauri-apps/api/path";
 
 import { cfg } from "../../config";
@@ -167,6 +167,13 @@ export default function SampleListEntry(
     // is not explicitly marked as non-draggable (as it may be clicked etc.)
     const dragOrigin = document.elementFromPoint(ev.clientX, ev.clientY)?.parentElement;
     if (dragOrigin != null && dragOrigin.dataset.draggable === "false") {
+      return;
+    }
+
+    if (!await checkDirExists(cfg().sampleDir)) {
+      toast.danger("Sample folder not found", {
+        description: "Choose an existing sample folder in the settings to drag samples into your DAW."
+      });
       return;
     }
 

@@ -42,6 +42,11 @@ pub async fn file_exists(base_dir: String, relative_path: String) -> Result<bool
 }
 
 #[tauri::command]
+pub async fn dir_exists(path: String) -> Result<bool, String> {
+    Ok(!path.trim().is_empty() && PathBuf::from(path).is_dir())
+}
+
+#[tauri::command]
 pub async fn create_placeholder_file(base_dir: String, relative_path: String) -> Result<(), String> {
     let mut full_path = PathBuf::from(base_dir);
     full_path.push(relative_path);

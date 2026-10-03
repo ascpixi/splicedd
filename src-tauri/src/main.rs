@@ -127,6 +127,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             files::write_sample_file,
             files::file_exists,
+            files::dir_exists,
             files::create_placeholder_file,
             updater::fetch_releases,
             updater::install_update

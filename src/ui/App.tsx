@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { Button, ListBox, ListBoxItem, ListBoxItemIndicator, ModalBackdrop, ModalCloseTrigger, ModalContainer, ModalDialog, Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationNextIcon, PaginationPrevious, PaginationPreviousIcon, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, ToggleButton, useOverlayState } from "@heroui/react";
+import { Alert, AlertContent, AlertDescription, AlertIndicator, AlertTitle, Button, ListBox, ListBoxItem, ListBoxItemIndicator, ModalBackdrop, ModalCloseTrigger, ModalContainer, ModalDialog, Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationNextIcon, PaginationPrevious, PaginationPreviousIcon, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, ToggleButton, useOverlayState } from "@heroui/react";
 import { InputGroup, InputGroupInput, InputGroupPrefix, InputGroupSuffix, Modal, Popover, PopoverContent, PopoverDialog, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue } from "@heroui/react";
 import { ArrowUpDown, ChevronDown, Disc3, EllipsisVertical, Guitar, Layers, Metronome, MoveRight, Music2, Repeat, Search, Wrench, X } from "lucide-react";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -15,7 +15,7 @@ import { UpdateInfo, checkForUpdates } from "../updater";
 import KeyScaleSelection from "./components/KeyScaleSelection";
 import BpmSelection, { BpmFilter, BpmFilterType } from "./components/BpmSelection";
 import { SamplePlaybackCancellation, SamplePlaybackContext } from "./playback";
-import { IN_TAURI } from "../native";
+import { IN_TAURI, checkDirExists } from "../native";
 import { mockSearch } from "../dev/mock";
 import { FIELD_BUTTON_CLASSES, NO_PRESS_SCALE, TAG_PILL_CLASSES } from "./fieldStyles";
 
@@ -117,6 +117,25 @@ function App() {
   const [searchError, setSearchError] = useState<string | null>(null);
 
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+
+  // Drags silently fail when the sample folder doesn't exist (e.g. it was deleted,
+  // or lives on a drive that's been unplugged), so warn about it up front.
+  const [sampleDirMissing, setSampleDirMissing] = useState(false);
+
+  useEffect(() => {
+    if (settings.isOpen)
+      return; // re-check once the user is done changing settings
+
+    const refresh = () => {
+      checkDirExists(cfg().sampleDir)
+        .then(exists => setSampleDirMissing(!exists))
+        .catch(err => console.error("Failed to check the sample folder:", err));
+    };
+
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [settings.isOpen]);
 
   useEffect(() => {
     checkForUpdates()
@@ -537,6 +556,19 @@ function App() {
             <X className="size-4" />
           </button>
         </div>
+      }
+
+      { sampleDirMissing && cfg().configured &&
+        <Alert status="warning" className="items-center">
+          <AlertIndicator />
+          <AlertContent>
+            <AlertTitle>Sample folder not found</AlertTitle>
+            <AlertDescription>
+              Drag-and-drop won't work until you choose an existing folder in the settings.
+            </AlertDescription>
+          </AlertContent>
+          <Button size="sm" variant="secondary" onClick={settings.open}>Open settings</Button>
+        </Alert>
       }
 
       {

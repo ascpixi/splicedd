@@ -41,6 +41,17 @@ export async function checkFileExists(baseDir: string, relativePath: string) {
 }
 
 /**
+ * Checks if `path` points to an existing directory. Always `true` outside of Tauri.
+ */
+// /src-tauri/src/files.rs
+export async function checkDirExists(path: string) {
+  if (!IN_TAURI)
+    return true;
+
+  return await invoke<boolean>("dir_exists", { path });
+}
+
+/**
  * Creates an empty placeholder file on the path retriveved by combining "baseDir" and "relativePath".
  */
 // /src-tauri/src/files.rs
