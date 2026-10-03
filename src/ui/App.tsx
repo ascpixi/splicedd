@@ -317,7 +317,9 @@ function App() {
             onKeyDown={handleSearchKeyDown}
             onChange={handleSearchInput}
           />
-          { searchLoading &&
+          { /* With no query or filters, a search only fetches the filter options
+               in the background (results aren't shown), so don't show a spinner */ }
+          { searchLoading && (query.length > 0 || filtersActive) &&
             <InputGroupSuffix>
               <ProgressCircle aria-label="Loading results..." isIndeterminate className="size-5">
                 <ProgressCircleTrack>
