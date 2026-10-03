@@ -92,6 +92,15 @@ const SPLICE_HELPER_INIT: &str = r#"
 "#;
 
 fn main() {
+    // WebKitGTK's DMA-BUF renderer fails on many Linux GPU setups (notably NVIDIA
+    // and some Wayland compositors), leaving the window completely blank. Fall
+    // back to the older renderer unless the user has explicitly chosen otherwise.
+    // This must happen before any threads are spawned (set_var isn't thread-safe).
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_dialog::init())
