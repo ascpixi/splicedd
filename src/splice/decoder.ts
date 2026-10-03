@@ -25,6 +25,45 @@ export function decodeSpliceAudio(data: Uint8Array) {
   return audioData;
 }
 
+/**
+ * The number of samples of silence/pre-ringing at the start of a decoded Splice
+ * MP3 preview, at the MP3's own sample rate. This is LAME's encoder delay (576)
+ * plus the standard MP3 decoder delay (529). Splice's previews don't carry a
+ * LAME/Xing gapless header, so decoders don't strip this on their own.
+ */
+export const MP3_START_DELAY = 576 + 529;
+
+/**
+ * Finds the sample rate of an MP3 file by reading the header of its first frame.
+ * @returns The sample rate in Hz, or `null` if no valid frame header was found.
+ */
+export function getMp3SampleRate(data: Uint8Array) {
+  let i = 0;
+
+  // Skip an ID3v2 tag, if present - its size is a 28-bit "syncsafe" integer.
+  if (data[0] == 0x49 && data[1] == 0x44 && data[2] == 0x33) {
+    i = 10 + (
+      ((data[6] & 0x7f) << 21) | ((data[7] & 0x7f) << 14) |
+      ((data[8] & 0x7f) << 7) | (data[9] & 0x7f)
+    );
+  }
+
+  for (; i < data.length - 3; i++) {
+    if (data[i] != 0xff || (data[i + 1] & 0xe0) != 0xe0)
+      continue;
+
+    const version = (data[i + 1] >> 3) & 0b11; // 0 = MPEG 2.5, 2 = MPEG 2, 3 = MPEG 1
+    const rateIdx = (data[i + 2] >> 2) & 0b11;
+    if (version == 1 || rateIdx == 3)
+      continue; // reserved values - not a frame header
+
+    const rate = [44100, 48000, 32000][rateIdx];
+    return version == 3 ? rate : version == 2 ? rate / 2 : rate / 4;
+  }
+
+  return null;
+}
+
 function decodePass(i: number, arr: Uint8Array, encodeBlk: string, size: number) {
   let encblkIdx = 0;
 

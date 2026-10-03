@@ -14,7 +14,7 @@ import { DRAG_PREVIEW_ICON } from "../../dragIcon";
 import { SamplePlaybackContext } from "../playback";
 import { SpliceTag } from "../../splice/entities";
 import { SpliceSample, SpliceSamplePack } from "../../splice/api";
-import { decodeSpliceAudio } from "../../splice/decoder";
+import { decodeSpliceAudio, getMp3SampleRate, MP3_START_DELAY } from "../../splice/decoder";
 import Waveform from "./Waveform";
 
 const getChordTypeDisplay = (type: string | null) =>
@@ -187,19 +187,22 @@ export default function SampleListEntry(
           startDrag(dragParams);
         }
 
-        const actx = new AudioContext();
+        // decodeAudioData resamples to the context's rate, so decode at the MP3's
+        // own rate - this keeps the output unaltered and MP3_START_DELAY exact.
+        const sampleRate = getMp3SampleRate(decodedSample.current!) ?? 44100;
+        const actx = new OfflineAudioContext(1, 1, sampleRate);
 
         // decodeAudioData detaches the buffer we give it, so pass a copy to
         // keep the decoded sample usable for playback afterwards.
         const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
         const channels: Float32Array[] = [];
 
-        if (samples.length < 60 * 44100) {
+        if (samples.length < 60 * samples.sampleRate) {
           for (let i = 0; i < samples.numberOfChannels; i++) {
             const chan = samples.getChannelData(i);
 
-            const start = 1200;
-            const end = ((sample.duration / 1000) * samples.sampleRate) + start;
+            const start = MP3_START_DELAY;
+            const end = Math.round((sample.duration / 1000) * samples.sampleRate) + start;
 
             channels.push(chan.subarray(start, end));
           }
