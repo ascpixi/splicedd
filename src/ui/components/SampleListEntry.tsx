@@ -201,8 +201,10 @@ export default function SampleListEntry(
           for (let i = 0; i < samples.numberOfChannels; i++) {
             const chan = samples.getChannelData(i);
 
-            const start = MP3_START_DELAY;
-            const end = Math.round((sample.duration / 1000) * samples.sampleRate) + start;
+            const start = cfg().trimDelay ? MP3_START_DELAY : 0;
+            const end = cfg().trimDelay
+              ? Math.round((sample.duration / 1000) * samples.sampleRate) + start
+              : chan.length;
 
             channels.push(chan.subarray(start, end));
           }

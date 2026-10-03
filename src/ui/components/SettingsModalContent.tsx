@@ -34,6 +34,7 @@ function SettingRow({ title, description, control, children }: {
 export default function SettingsModalContent({ onClose }: { onClose: () => void }) {
   const sampleDir = useCfgSyncedState<string>("sampleDir");
   const placeholders = useCfgSyncedState<boolean>("placeholders");
+  const trimDelay = useCfgSyncedState<boolean>("trimDelay");
   const darkMode = useCfgSyncedState<boolean>("darkMode");
   const checkUpdates = useCfgSyncedState<boolean>("checkUpdates");
 
@@ -100,6 +101,20 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
                 isSelected={ cfg().placeholders }
                 onChange={ x => mutateCfgSync(x, placeholders) }
                 aria-label="Enable placeholder files"
+              >
+                <SwitchControl><SwitchThumb /></SwitchControl>
+              </Switch>
+            }
+          />
+
+          <SettingRow
+            title="Trim MP3 delay"
+            description="Remove the silence and pre-ringing that MP3 encoding adds to the start of samples."
+            control={
+              <Switch
+                isSelected={ cfg().trimDelay }
+                onChange={ x => mutateCfgSync(x, trimDelay) }
+                aria-label="Trim MP3 delay"
               >
                 <SwitchControl><SwitchThumb /></SwitchControl>
               </Switch>

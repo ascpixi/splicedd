@@ -9,6 +9,9 @@ import { IN_TAURI } from "./native";
 export interface SpliceddConfig {
   sampleDir: string;
   placeholders: boolean;
+
+  /** Whether to trim the MP3 encoder/decoder delay off the start of exported samples. */
+  trimDelay: boolean;
   darkMode: boolean;
   checkUpdates: boolean;
 
@@ -26,6 +29,7 @@ function defaultCfg(): SpliceddConfig {
     sampleDir: "",
     darkMode: true,
     placeholders: false,
+    trimDelay: true,
     checkUpdates: true,
     skippedUpdateVersion: "",
     configured: false
