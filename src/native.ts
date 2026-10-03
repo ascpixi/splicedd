@@ -7,6 +7,15 @@ import { invoke } from '@tauri-apps/api/core';
  */
 export const IN_TAURI = "__TAURI_INTERNALS__" in window;
 
+/** Whether the app is running on Windows. */
+export const IS_WINDOWS = navigator.userAgent.includes("Windows");
+
+/**
+ * The longest path (in UTF-16 code units, excluding the null terminator) that the
+ * Windows shell accepts. Dragging files with longer paths isn't possible.
+ */
+export const WINDOWS_MAX_PATH = 259;
+
 /**
  * Writes a file to the path retriveved by combining `baseDir` and `relativePath`.
  * The path is required to end with ".wav".

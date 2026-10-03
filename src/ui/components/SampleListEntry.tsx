@@ -1,4 +1,4 @@
-import { Chip, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, Tooltip, TooltipContent, TooltipTrigger } from "@heroui/react";
+import { Chip, ProgressCircle, ProgressCircleFillCircle, ProgressCircleTrack, ProgressCircleTrackCircle, Tooltip, TooltipContent, TooltipTrigger, toast } from "@heroui/react";
 import { Clock, Metronome, Music2, Play, Square } from "lucide-react";
 
 import { fetch } from "@tauri-apps/plugin-http";
@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
 import * as wav from "node-wav";
-import { checkFileExists, createPlaceholder, writeSampleFile } from "../../native";
+import { checkFileExists, createPlaceholder, IS_WINDOWS, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
 import { join } from "@tauri-apps/api/path";
 
 import { cfg } from "../../config";
@@ -170,10 +170,35 @@ export default function SampleListEntry(
       return;
     }
 
-    const samplePath = sanitizePath(pack.name) + "/" + sanitizePath(sample.name);
+    // Windows' shell can't drag files whose path is longer than MAX_PATH - the
+    // drag plugin crashes the whole app if we try. Fall back to shorter layouts
+    // (dropping the sample's own subfolders, then the pack folder) when needed.
+    const fileName = sample.name.split("/").pop()!;
+    const candidates = [
+      sanitizePath(pack.name) + "/" + sanitizePath(sample.name),
+      sanitizePath(pack.name) + "/" + sanitizePath(fileName),
+      sanitizePath(fileName)
+    ];
+
+    let samplePath: string | null = null;
+    let fullPath = "";
+    for (const candidate of candidates) {
+      fullPath = await join(cfg().sampleDir, candidate);
+      if (!IS_WINDOWS || fullPath.length <= WINDOWS_MAX_PATH) {
+        samplePath = candidate;
+        break;
+      }
+    }
+
+    if (samplePath == null) {
+      toast.danger("Can't drag this sample", {
+        description: "The path to your sample folder is too long for Windows. Choose a shorter one in the settings."
+      });
+      return;
+    }
 
     const dragParams = {
-      item: [await join(cfg().sampleDir, samplePath)],
+      item: [fullPath],
       icon: DRAG_PREVIEW_ICON
     };
 
