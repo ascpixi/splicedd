@@ -166,6 +166,8 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
           by <Link className="text-xs" href="https://ascpixi.github.io" target="_blank">@ascpixi</Link>
           {" · "}
           <Link className="text-xs" href="https://github.com/ascpixi/splicedd" target="_blank">GitHub</Link>
+          {" · "}
+          v{__APP_VERSION__}
         </p>
       </ModalFooter>
     </>
