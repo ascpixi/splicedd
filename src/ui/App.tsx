@@ -4,6 +4,7 @@ import { Alert, AlertContent, AlertDescription, AlertIndicator, AlertTitle, Butt
 import { InputGroup, InputGroupInput, InputGroupPrefix, InputGroupSuffix, Modal, Popover, PopoverContent, PopoverDialog, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue } from "@heroui/react";
 import { ArrowUpDown, ChevronDown, Disc3, EllipsisVertical, Guitar, Layers, Metronome, MoveRight, Music2, Repeat, Search, Wrench, X } from "lucide-react";
 import { emit, listen } from "@tauri-apps/api/event";
+import { createSearchTransport } from "../splice/search-transport";
 import { cfg } from "../config";
 import { SpliceSample, SpliceSamplePack, SpliceSearchResponse, createSearchRequest } from "../splice/api";
 import { ChordType, MusicKey, SpliceSampleType, SpliceSortBy, SpliceTag } from "../splice/entities";
@@ -19,49 +20,12 @@ import { IN_TAURI, checkDirExists } from "../native";
 import { mockSearch } from "../dev/mock";
 import { FIELD_BUTTON_CLASSES, NO_PRESS_SCALE, TAG_PILL_CLASSES } from "./fieldStyles";
 
-/**
- * Runs a Splice GraphQL request through the hidden splice.com helper webview
- * (see `splice-helper` in the Rust backend), which fetches from the splice.com
- * origin so it clears Cloudflare Bot Management and Splice's CORS. Communication
- * is a one-shot event round-trip correlated by a request id.
- */
+// The helper acknowledges delivery before starting the request, so a slow
+// search cannot cause the frontend to launch overlapping retries.
+const nativeSearch = createSearchTransport({ emit, listen });
+
 function spliceSearch(body: string): Promise<string> {
-  if (!IN_TAURI) {
-    return Promise.resolve(mockSearch(body));
-  }
-
-  const id = crypto.randomUUID();
-
-  return new Promise<string>((resolve, reject) => {
-    let unlisten: (() => void) | null = null;
-
-    // Re-emit periodically: the helper webview may not have registered its
-    // listener yet (it's still loading splice.com / clearing Cloudflare), and
-    // Tauri drops events that have no listener rather than queuing them.
-    const reEmit = setInterval(() => { emit("splice-search", { id, body }); }, 1500);
-
-    const settle = () => { clearInterval(reEmit); clearTimeout(timer); unlisten?.(); };
-
-    const timer = setTimeout(() => {
-      settle();
-      reject(new Error("Splice search timed out (the helper webview may still be clearing Cloudflare)."));
-    }, 20000);
-
-    listen<{ id: string, ok: boolean, body?: string, error?: string }>("splice-result", ev => {
-      if (ev.payload.id !== id) return;
-
-      settle();
-
-      if (ev.payload.ok && ev.payload.body != null) {
-        resolve(ev.payload.body);
-      } else {
-        reject(new Error(ev.payload.error ?? "Splice search failed"));
-      }
-    }).then(fn => {
-      unlisten = fn;
-      emit("splice-search", { id, body });
-    });
-  });
+  return IN_TAURI ? nativeSearch(body) : Promise.resolve(mockSearch(body));
 }
 
 function buildPageList(current: number, total: number): (number | "ellipsis")[] {
@@ -264,10 +228,8 @@ function App() {
 
       let raw: string;
       try {
-        // Routed through the hidden splice.com helper webview so the request clears
-        // Cloudflare Bot Management (which blocks non-browser TLS fingerprints) and
-        // Splice's CORS. A direct browser fetch from our own origin can't do this
-        // without disabling web security, which breaks Tauri v2 IPC.
+        // The hidden helper fetches on the API's own origin, avoiding the CORS
+        // preflight that can be rejected by Splice's browser verification.
         raw = await spliceSearch(JSON.stringify(payload));
         setSearchError(null);
       } catch (err) {
