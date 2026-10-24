@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { sampleTargetHeader } from './splice/export';
 
 /**
  * Whether the app is running inside the Tauri shell. When `false` (e.g. when
@@ -21,16 +22,15 @@ export const WINDOWS_MAX_PATH = 259;
  * The path is required to end with ".wav".
  */
 // /src-tauri/src/files.rs
-export async function writeSampleFile(baseDir: string, relativePath: string, buffer: Buffer) {
-  await invoke("write_sample_file", {
-    baseDir,
-    relativePath,
-    buffer: Array.from(buffer)
+export async function writeSampleFile(baseDir: string, relativePath: string, buffer: Uint8Array) {
+  // Send raw bytes instead of expanding a multi-megabyte WAV into a JSON array.
+  await invoke("write_sample_file", buffer, {
+    headers: { "x-splicedd-target": sampleTargetHeader(baseDir, relativePath) }
   });
 }
 
 /**
- * Checks if a file exists on the path retriveved by combining `baseDir` and `relativePath`.
+ * Checks whether a cached WAV is complete; empty placeholders are regenerated.
  */
 // /src-tauri/src/files.rs
 export async function checkFileExists(baseDir: string, relativePath: string) {
@@ -51,13 +51,7 @@ export async function checkDirExists(path: string) {
   return await invoke<boolean>("dir_exists", { path });
 }
 
-/**
- * Creates an empty placeholder file on the path retriveved by combining "baseDir" and "relativePath".
- */
-// /src-tauri/src/files.rs
+/** Create an empty drag target without truncating an existing sample. */
 export async function createPlaceholder(baseDir: string, relativePath: string) {
-  await invoke("create_placeholder_file", {
-    baseDir,
-    relativePath
-  });
+  await invoke("create_placeholder_file", { baseDir, relativePath });
 }

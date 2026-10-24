@@ -5,7 +5,7 @@ import { fetch } from "@tauri-apps/plugin-http";
 import { useEffect, useRef, useState } from "react";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
-import * as wav from "node-wav";
+import { encodeSampleWav, prepareSampleDrag } from "../../splice/export";
 import { checkDirExists, checkFileExists, createPlaceholder, IS_WINDOWS, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
 import { join } from "@tauri-apps/api/path";
 
@@ -14,7 +14,7 @@ import { DRAG_PREVIEW_ICON } from "../../dragIcon";
 import { SamplePlaybackContext } from "../playback";
 import { SpliceTag } from "../../splice/entities";
 import { SpliceSample, SpliceSamplePack } from "../../splice/api";
-import { decodeSpliceAudio, getMp3SampleRate, MP3_START_DELAY } from "../../splice/decoder";
+import { decodeSpliceAudio, getMp3SampleRate } from "../../splice/decoder";
 import Waveform from "./Waveform";
 
 const getChordTypeDisplay = (type: string | null) =>
@@ -204,60 +204,36 @@ export default function SampleListEntry(
       return;
     }
 
+    const relativePath = samplePath;
+
     const dragParams = {
       item: [fullPath],
       icon: DRAG_PREVIEW_ICON
     };
 
+    const { sampleDir, trimDelay, placeholders } = cfg();
     setFgLoading(true);
     try {
-      await ensureAudioDecoded();
-
-      if (!await checkFileExists(cfg().sampleDir, samplePath)) {
-        if (cfg().placeholders) {
-          await createPlaceholder(cfg().sampleDir, samplePath);
-          startDrag(dragParams);
-        }
-
-        // decodeAudioData resamples to the context's rate, so decode at the MP3's
-        // own rate - this keeps the output unaltered and MP3_START_DELAY exact.
-        const sampleRate = getMp3SampleRate(decodedSample.current!) ?? 44100;
-        const actx = new OfflineAudioContext(1, 1, sampleRate);
-
-        // decodeAudioData detaches the buffer we give it, so pass a copy to
-        // keep the decoded sample usable for playback afterwards.
-        const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
-        const channels: Float32Array[] = [];
-
-        if (samples.length < 60 * samples.sampleRate) {
-          for (let i = 0; i < samples.numberOfChannels; i++) {
-            const chan = samples.getChannelData(i);
-
-            const start = cfg().trimDelay ? MP3_START_DELAY : 0;
-            const end = cfg().trimDelay
-              ? Math.round((sample.duration / 1000) * samples.sampleRate) + start
-              : chan.length;
-
-            channels.push(chan.subarray(start, end));
-          }
-        } else {
-          // processing big samples may result in memory allocation errors (it sure did for me!!)
-          console.warn(`big boi detected of ${samples.length} samples - not pre-processing!`);
-        }
-
-        await writeSampleFile(cfg().sampleDir, samplePath, wav.encode(channels as unknown as ArrayBuffer[], {
-          bitDepth: 16,
-          sampleRate: samples.sampleRate
-        }));
-
-        if (!cfg().placeholders) {
-          startDrag(dragParams);
-        }
-      } else {
-        startDrag(dragParams);
-      }
+      await prepareSampleDrag({
+        placeholders,
+        createPlaceholder: () => createPlaceholder(sampleDir, relativePath),
+        isReady: () => checkFileExists(sampleDir, relativePath),
+        prepare: async () => {
+          await ensureAudioDecoded();
+          // Preserve the preview's sample rate and exact MP3-delay trimming.
+          const sampleRate = getMp3SampleRate(decodedSample.current!) ?? 44100;
+          const actx = new OfflineAudioContext(1, 1, sampleRate);
+          const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
+          const encoded = encodeSampleWav(samples, sample.duration, trimDelay);
+          await writeSampleFile(sampleDir, relativePath, encoded);
+        },
+        startDrag: () => startDrag(dragParams)
+      });
     } catch (err) {
       console.error("failed to prepare sample for dragging:", err);
+      toast.danger("Couldn't export sample", {
+        description: err instanceof Error ? err.message : String(err)
+      });
     } finally {
       setFgLoading(false);
     }
