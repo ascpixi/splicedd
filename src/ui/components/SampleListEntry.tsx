@@ -127,7 +127,10 @@ export default function SampleListEntry(
         contentType: resp.headers.get("content-type"),
         contentEncoding: resp.headers.get("content-encoding")
       }, resp.ok ? "debug" : "error"),
-      err => span.fail(err)
+      err => {
+        span.fail(err);
+        fetchAhead.current = null; // try again the next time
+      }
     );
   }
 
@@ -231,24 +234,52 @@ export default function SampleListEntry(
     setProgress(target);
   }
 
+  const download = useRef<Promise<void> | null>(null);
+
   async function ensureAudioDecoded(span: LogSpan) {
     if (decodedSample.current != null) {
       span.log("debug", "already downloaded");
       return;
     }
 
-    if (fetchAhead.current == null) {
-      startFetching();
+    // The body of a response can be read only once, so if we're already being downloaded
+    // (e.g. because of the user both playing and dragging us), wait for that to finish.
+    if (download.current != null) {
+      span.log("debug", "already downloading");
+      await download.current;
+      span.step("waited for an ongoing download");
+      return;
     }
 
-    const resp = await fetchAhead.current!;
-    span.step("waited for headers", { status: resp.status });
+    download.current = downloadAudio(span);
+    try {
+      await download.current;
+    }
+    finally {
+      download.current = null;
+    }
+  }
 
-    const data = await resp.arrayBuffer();
-    span.step("read body", { bytes: data.byteLength, contentLength: resp.headers.get("content-length") });
+  async function downloadAudio(span: LogSpan) {
+    startFetching();
 
-    decodedSample.current = decodeSpliceAudio(new Uint8Array(data));
-    span.step("unscrambled", { mp3: describeMp3(decodedSample.current) });
+    try {
+      const resp = await fetchAhead.current!;
+      span.step("waited for headers", { status: resp.status });
+
+      if (!resp.ok)
+        throw new Error(`Splice returned HTTP ${resp.status}`);
+
+      const data = await resp.arrayBuffer();
+      span.step("read body", { bytes: data.byteLength, contentLength: resp.headers.get("content-length") });
+
+      decodedSample.current = decodeSpliceAudio(new Uint8Array(data));
+      span.step("unscrambled", { mp3: describeMp3(decodedSample.current) });
+    }
+    catch (err) {
+      fetchAhead.current = null; // the response can't be reused
+      throw err;
+    }
   }
 
   const sanitizePath = (x: string) => x.replace(/[<>:"|?* ]/g, "_");
