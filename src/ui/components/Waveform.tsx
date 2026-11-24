@@ -65,35 +65,40 @@ export default function Waveform(
       observer.disconnect();
 
       const startedAt = performance.now();
-
-      const resp = await fetch(src).catch(err => {
-        log.error("failed to fetch", { url: shortUrl(src), err, elapsedMs: performance.now() - startedAt });
-        return null;
-      });
-
-      if (resp == null)
-        return;
-
-      // Splice serves these gzipped, but the plugin-http client doesn't always
-      // transparently decompress them like a browser fetch would.
       let data: number[];
-      if (resp.headers.get("content-encoding") == "gzip") {
-        const stream = (await resp.blob()).stream()
-          .pipeThrough(new DecompressionStream("gzip"));
 
-        data = await new Response(stream).json();
-      } else {
-        data = await resp.json();
+      try {
+        const resp = await fetch(src);
+        if (!resp.ok) {
+          await resp.body?.cancel();
+          throw new Error(`Splice returned HTTP ${resp.status}`);
+        }
+
+        // Splice serves these gzipped, but the plugin-http client doesn't always
+        // transparently decompress them like a browser fetch would.
+        if (resp.headers.get("content-encoding") == "gzip") {
+          const stream = (await resp.blob()).stream()
+            .pipeThrough(new DecompressionStream("gzip"));
+
+          data = await new Response(stream).json();
+        }
+        else {
+          data = await resp.json();
+        }
+
+        log.trace("loaded", {
+          url: shortUrl(src),
+          points: data.length,
+          status: resp.status,
+          contentEncoding: resp.headers.get("content-encoding"),
+          elapsedMs: performance.now() - startedAt,
+          cancelled
+        });
       }
-
-      log.trace("loaded", {
-        url: shortUrl(src),
-        points: data.length,
-        status: resp.status,
-        contentEncoding: resp.headers.get("content-encoding"),
-        elapsedMs: performance.now() - startedAt,
-        cancelled
-      });
+      catch (err) {
+        log.error("failed to load", { url: shortUrl(src), err, elapsedMs: performance.now() - startedAt });
+        return;
+      }
 
       if (!cancelled) {
         setWaveform(data);
