@@ -18,6 +18,14 @@ Splicedd isn't notarized by Apple, so macOS will block it the first time you ope
 
 You only need to do this once.
 
+## Reporting issues
+Splicedd keeps logs that help with tracking down problems. To include them in a [bug report](https://github.com/ascpixi/splicedd/issues/new):
+1. turn on **Developer mode** in the settings,
+2. reproduce the problem,
+3. click **View logs** in the settings, then **Open folder**, and attach `splicedd.log`. If you've restarted Splicedd in the meantime (e.g. because it crashed), attach the most recent `splicedd_<date>.log` too.
+
+The logs include your searches, sample names, and folder paths (with your home folder replaced by `~`).
+
 ## Development
 
 Install Node.js 22.6 or newer (for the test runner), Rust, Yarn Classic 1.22,

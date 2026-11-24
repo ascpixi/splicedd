@@ -24,6 +24,32 @@ export function createSearchRequest(query: string): SpliceSearchRequest {
 }
 
 /**
+ * Creates a search query for sample packs, with its only constraint being the name, as provided
+ * via the `query` argument.
+ */
+export function createPackSearchRequest(query: string): SplicePackSearchRequest {
+  return {
+    operationName: "PacksSearch",
+    query: 'query PacksSearch($page: Int, $order: SortOrder = DESC, $limit: Int = 50, $sort: AssetSortType = relevance, $query: String, $tags: [ID!], $random_seed: String, $legacy: Boolean) {\n  assetsSearch(\n    filter: {legacy: $legacy, published: true, asset_type_slug: pack, query: $query, tag_ids: $tags}\n    pagination: {page: $page, limit: $limit}\n    sort: {sort: $sort, order: $order, random_seed: $random_seed}\n    legacy: {use: $legacy}\n  ) {\n    items {\n      ... on PackAsset {\n        uuid\n        name\n        permalink_base_url\n        main_genre\n        provider {\n          name\n        }\n        child_asset_counts {\n          type\n          count\n        }\n        files {\n          path\n          asset_file_type_slug\n          url\n        }\n      }\n    }\n    tag_summary {\n      tag {\n        uuid\n        label\n        taxonomy {\n          uuid\n          name\n        }\n      }\n      count\n    }\n    pagination_metadata {\n      currentPage\n      totalPages\n    }\n    response_metadata {\n      records\n    }\n  }\n}\n',
+    variables: {
+      query,
+      legacy: true,
+      limit: 48,
+      order: "DESC",
+      sort: "relevance",
+      tags: []
+    }
+  }
+}
+
+/**
+ * Creates a seed for searches sorted by `"random"`. Splice rejects ones that aren't 10 digits long.
+ */
+export function createRandomSeed() {
+  return Math.floor(1_000_000_000 + Math.random() * 9_000_000_000).toString();
+}
+
+/**
  * Represents any GraphQL request to Splice.
  */
 export interface SpliceRequest<T> {
@@ -56,10 +82,27 @@ export interface SpliceSearchRequest extends SpliceRequest<{
   parent_asset_type?: "pack"
 }>{}
 
-export type SpliceSearchResponse = {
+/**
+ * Represents a search GraphQL request to Splice which looks for sample packs, instead of samples.
+ */
+export interface SplicePackSearchRequest extends SpliceRequest<{
+  query: string,
+  limit: number,
+  order: "DESC",
+  sort: SpliceSortBy,
+  random_seed?: string,
+  legacy?: true,
+  tags: string[],
+  page?: number
+}>{}
+
+/** The last page of packs that Splice allows to be requested, no matter how many of them there are. */
+export const MAX_PACK_PAGE = 100;
+
+export type SpliceSearchResponse<T = SpliceSample> = {
   data: {
     assetsSearch: {
-      items: SpliceSample[],
+      items: T[],
       tag_summary: {
         tag: {
           uuid: string,
@@ -113,5 +156,15 @@ export type SpliceSamplePack = {
     path: string,
     asset_file_type_slug: "cover_image" | "banner_image" | "demo_mp3" | "preview_mp3",
     url: string
+  }[]
+}
+
+/** A sample pack, as returned when searching for packs themselves. */
+export type SplicePackSearchResult = SpliceSamplePack & {
+  main_genre: string | null,
+  provider: { name: string } | null,
+  child_asset_counts: {
+    type: "sample" | "preset",
+    count: number
   }[]
 }

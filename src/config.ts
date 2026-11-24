@@ -2,21 +2,31 @@ import { exists, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { BaseDirectory } from "@tauri-apps/api/path";
 import { useState } from "react";
 import { IN_TAURI } from "./native";
+import { createLogger } from "./log";
+
+const log = createLogger("config");
+
+/**
+ * How samples are processed before they're exported. "accurate" restores them to what they were before
+ * they were encoded as MP3s, while the classic modes merely decode them.
+ */
+export type ProcessingMode = "accurate" | "classic" | "classic-trimmed";
 
 /**
  * Represents the user configuration file of Splicedd.
  */
 export interface SpliceddConfig {
   sampleDir: string;
-  placeholders: boolean;
 
-  /** Whether to trim the MP3 encoder/decoder delay off the start of exported samples. */
-  trimDelay: boolean;
+  processing: ProcessingMode;
   darkMode: boolean;
   checkUpdates: boolean;
 
   /** The release tag (e.g. "v1.2.0") the user chose to skip, if any. */
   skippedUpdateVersion: string;
+
+  /** Whether to log much more than usual. Always the case in development builds. */
+  developerMode: boolean;
 
   configured: boolean;
 }
@@ -28,10 +38,10 @@ function defaultCfg(): SpliceddConfig {
   return {
     sampleDir: "",
     darkMode: true,
-    placeholders: false,
-    trimDelay: true,
+    processing: "accurate",
     checkUpdates: true,
     skippedUpdateVersion: "",
+    developerMode: false,
     configured: false
   }
 }
@@ -47,6 +57,7 @@ export function cfg(): SpliceddConfig {
  * Changes select values of the user configuration and saves it to the config file.
  */
 export async function mutateCfg(values: Partial<SpliceddConfig>) {
+  log.debug("changing values", { values });
   globalCfg = { ...globalCfg, ...values }
   await saveConfig();
 }
@@ -65,17 +76,27 @@ export async function loadConfig() {
   globalCfg = defaultCfg();
 
   try {
-    if (!await exists("config.json", { baseDir: BaseDirectory.AppConfig }))
+    if (!await exists("config.json", { baseDir: BaseDirectory.AppConfig })) {
+      log.info("no config file found; using defaults");
       return;
+    }
 
     const raw = await readTextFile("config.json", {
       baseDir: BaseDirectory.AppConfig,
     });
-    globalCfg = { ...defaultCfg(), ...JSON.parse(raw) };
-  } catch (err) {
+
+    // "trimDelay" has been replaced by "processing". It's ignored on purpose - regardless
+    // of what it was set to, everyone starts out with the default processing mode.
+    // "placeholders" belonged to a feature that has since been removed.
+    const { trimDelay: _, placeholders: __, ...saved } = JSON.parse(raw);
+    globalCfg = { ...defaultCfg(), ...saved };
+
+    log.info("config loaded", { config: globalCfg });
+  }
+  catch (err) {
     // A missing, unreadable, or malformed config must never prevent the UI
     // from mounting. Keep the defaults and allow the next save to repair it.
-    console.error("failed to load config; using defaults:", err);
+    log.error("failed to load config; using defaults", { err });
   }
 }
 
@@ -97,7 +118,15 @@ export async function saveConfig() {
     }));
 
   saveQueue = write;
-  await write;
+
+  try {
+    await write;
+    log.debug("config saved");
+  }
+  catch (err) {
+    log.error("failed to save config", { err });
+    throw err;
+  }
 }
 
 /**
@@ -122,6 +151,7 @@ export function useCfgSyncedState<T>(key: keyof SpliceddConfig) {
  * synchronizing it with the configuration object and the config file.
  */
 export function mutateCfgSync<T>(value: T, state: ConfigSyncedState<T>) {
+  log.debug("changing value", { key: state.key, value });
   (globalCfg as any)[state.key] = value;
   state.setState(value);
   return saveConfig();

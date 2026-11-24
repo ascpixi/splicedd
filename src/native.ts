@@ -1,4 +1,7 @@
-import { invoke } from '@tauri-apps/api/core';
+import { InvokeArgs, InvokeOptions, invoke as rawInvoke } from '@tauri-apps/api/core';
+import { createLogger, LogFields } from './log';
+
+const log = createLogger("native");
 
 /**
  * Whether the app is running inside the Tauri shell. When `false` (e.g. when
@@ -10,6 +13,9 @@ export const IN_TAURI = "__TAURI_INTERNALS__" in window;
 /** Whether the app is running on Windows. */
 export const IS_WINDOWS = navigator.userAgent.includes("Windows");
 
+/** Whether the app is running on macOS. */
+export const IS_MACOS = navigator.userAgent.includes("Macintosh");
+
 /**
  * The longest path (in UTF-16 code units, excluding the null terminator) that the
  * Windows shell accepts. Dragging files with longer paths isn't possible.
@@ -17,27 +23,71 @@ export const IS_WINDOWS = navigator.userAgent.includes("Windows");
 export const WINDOWS_MAX_PATH = 259;
 
 /**
+ * Invokes a command, logging how long it took. As arguments can be huge, only the given `fields` are logged.
+ */
+export async function invoke<T>(command: string, args?: InvokeArgs, fields?: LogFields, options?: InvokeOptions): Promise<T> {
+  const startedAt = performance.now();
+  log.trace(`invoking ${command}`, fields);
+
+  try {
+    const result = await rawInvoke<T>(command, args, options);
+    log.trace(`${command} returned`, { elapsedMs: performance.now() - startedAt });
+    return result;
+  }
+  catch (err) {
+    log.error(`${command} failed`, { ...fields, err, elapsedMs: performance.now() - startedAt });
+    throw err;
+  }
+}
+
+/**
  * Writes a file to the path retriveved by combining `baseDir` and `relativePath`.
  * The path is required to end with ".wav".
  */
 // /src-tauri/src/files.rs
-export async function writeSampleFile(baseDir: string, relativePath: string, buffer: Buffer) {
-  await invoke("write_sample_file", {
-    baseDir,
-    relativePath,
-    buffer: Array.from(buffer)
+export async function writeSampleFile(baseDir: string, relativePath: string, data: Uint8Array) {
+  const startedAt = performance.now();
+
+  // The data makes up the entire body of the request, so that it's sent over as-is - which leaves
+  // only the headers for everything else. These can't contain any non-ASCII characters.
+  const file = JSON.stringify({ baseDir, relativePath })
+    .replace(/[\u007f-\uffff]/g, x => "\\u" + x.charCodeAt(0).toString(16).padStart(4, "0"));
+
+  await invoke(
+    "write_sample_file", data,
+    { relativePath, bytes: data.byteLength },
+    { headers: { "sample-file": file } }
+  );
+
+  // The backend logs how long the write itself took, so what remains is the IPC overhead.
+  log.debug("write_sample_file timing", {
+    bytes: data.byteLength,
+    invokeMs: performance.now() - startedAt
   });
 }
 
 /**
- * Checks if a file exists on the path retriveved by combining `baseDir` and `relativePath`.
+ * Restores the original sample out of a MP3 preview. Rejects if the preview isn't in a format that can be restored.
+ * @returns A WAV file.
+ */
+// /src-tauri/src/restore/mod.rs
+export async function restoreSample(mp3: Uint8Array, durationMs: number, loopBpm: number | null) {
+  // Just like in `writeSampleFile`, the MP3 makes up the entire body of the request.
+  const wav = await invoke<ArrayBuffer>(
+    "restore_sample", mp3,
+    { bytes: mp3.byteLength, durationMs, loopBpm },
+    { headers: { "sample": JSON.stringify({ durationMs, loopBpm }) } }
+  );
+
+  return new Uint8Array(wav);
+}
+
+/**
+ * Checks if a file exists (and isn't empty) on the path retriveved by combining `baseDir` and `relativePath`.
  */
 // /src-tauri/src/files.rs
 export async function checkFileExists(baseDir: string, relativePath: string) {
-  return await invoke<boolean>("file_exists", {
-    baseDir,
-    relativePath
-  });
+  return await invoke<boolean>("file_exists", { baseDir, relativePath }, { relativePath });
 }
 
 /**
@@ -49,15 +99,4 @@ export async function checkDirExists(path: string) {
     return true;
 
   return await invoke<boolean>("dir_exists", { path });
-}
-
-/**
- * Creates an empty placeholder file on the path retriveved by combining "baseDir" and "relativePath".
- */
-// /src-tauri/src/files.rs
-export async function createPlaceholder(baseDir: string, relativePath: string) {
-  await invoke("create_placeholder_file", {
-    baseDir,
-    relativePath
-  });
 }

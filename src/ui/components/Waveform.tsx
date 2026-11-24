@@ -1,6 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { IN_TAURI } from "../../native";
+import { createLogger, shortUrl } from "../../log";
+
+const log = createLogger("waveform");
 
 // The Tauri HTTP client bypasses CORS, but only exists inside the Tauri shell.
 const fetch = IN_TAURI ? tauriFetch : window.fetch.bind(window);
@@ -61,8 +64,10 @@ export default function Waveform(
 
       observer.disconnect();
 
+      const startedAt = performance.now();
+
       const resp = await fetch(src).catch(err => {
-        console.error("failed to fetch waveform:", err);
+        log.error("failed to fetch", { url: shortUrl(src), err, elapsedMs: performance.now() - startedAt });
         return null;
       });
 
@@ -80,6 +85,15 @@ export default function Waveform(
       } else {
         data = await resp.json();
       }
+
+      log.trace("loaded", {
+        url: shortUrl(src),
+        points: data.length,
+        status: resp.status,
+        contentEncoding: resp.headers.get("content-encoding"),
+        elapsedMs: performance.now() - startedAt,
+        cancelled
+      });
 
       if (!cancelled) {
         setWaveform(data);

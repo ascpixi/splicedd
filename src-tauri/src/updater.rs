@@ -1,9 +1,12 @@
 use std::io::Write;
+use std::time::Instant;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_http::reqwest;
 use tauri_plugin_shell::ShellExt;
+
+use crate::logging::{ms, truncate};
 
 const RELEASES_API_URL: &str = "https://api.github.com/repos/ascpixi/splicedd/releases";
 const DOWNLOAD_URL_PREFIX: &str = "https://github.com/ascpixi/splicedd/releases/download/";
@@ -17,6 +20,8 @@ const DOWNLOAD_URL_PREFIX: &str = "https://github.com/ascpixi/splicedd/releases/
 /// don't allow overriding.
 #[tauri::command]
 pub async fn fetch_releases() -> Result<serde_json::Value, String> {
+    let started = Instant::now();
+
     let resp = reqwest::Client::new()
         .get(RELEASES_API_URL)
         .header("Accept", "application/vnd.github+json")
@@ -30,6 +35,8 @@ pub async fn fetch_releases() -> Result<serde_json::Value, String> {
 
     let body = resp.text().await
         .map_err(|e| format!("Failed to read the GitHub response: {e}"))?;
+
+    log::debug!("fetched release metadata: {} bytes in {}", body.len(), ms(started.elapsed()));
 
     serde_json::from_str(&body)
         .map_err(|e| format!("Failed to parse the GitHub response: {e}"))
@@ -46,6 +53,9 @@ struct DownloadProgress {
 /// the installer can replace our files.
 #[tauri::command]
 pub async fn install_update(app: AppHandle, url: String) -> Result<(), String> {
+    log::info!("installing an update from {}", truncate(&url));
+    let started = Instant::now();
+
     // The frontend only ever passes asset URLs from our own releases; this is
     // just a backstop so this command can't be used to run arbitrary files.
     if !url.starts_with(DOWNLOAD_URL_PREFIX) {
@@ -84,12 +94,15 @@ pub async fn install_update(app: AppHandle, url: String) -> Result<(), String> {
 
     drop(file);
 
+    log::info!("downloaded {downloaded} bytes (expected {total:?}) in {}; launching {path:?}", ms(started.elapsed()));
+
     // `Shell::open` is deprecated in favor of the opener plugin, but it works
     // fine for launching installers and saves us from pulling in another plugin.
     #[allow(deprecated)]
     app.shell().open(path.to_string_lossy(), None)
         .map_err(|e| format!("Failed to launch the installer: {e}"))?;
 
+    log::info!("installer launched, exiting");
     app.exit(0);
     Ok(())
 }

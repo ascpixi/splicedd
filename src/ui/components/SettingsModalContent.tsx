@@ -1,10 +1,31 @@
-import { ReactNode } from "react";
-import { Button, InputGroup, InputGroupInput, InputGroupPrefix, Link, ModalBody, ModalFooter, ModalHeader, ModalHeading, ModalIcon, Switch, SwitchControl, SwitchThumb } from "@heroui/react";
+import { ReactNode, useState } from "react";
+import { Button, InputGroup, InputGroupInput, InputGroupPrefix, Link, ListBox, ListBoxItem, ListBoxItemIndicator, ModalBody, ModalFooter, ModalHeader, ModalHeading, ModalIcon, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue, Switch, SwitchControl, SwitchThumb } from "@heroui/react";
 import { FolderOpen, Wrench } from "lucide-react";
 import BrowseButton from "./BrowseButton";
-import { cfg, mutateCfg, mutateCfgSync, useCfgSyncedState } from "../../config";
+import LogViewerModal from "./LogViewerModal";
+import { ProcessingMode, cfg, mutateCfg, mutateCfgSync, useCfgSyncedState } from "../../config";
+import { IN_TAURI } from "../../native";
+import { setVerbose } from "../../log";
 import { refreshDarkMode } from "../theming";
 import { FIELD_BUTTON_CLASSES } from "../fieldStyles";
+
+const PROCESSING_MODES: { id: ProcessingMode, name: string, description: string }[] = [
+  {
+    id: "accurate",
+    name: "Accurate",
+    description: "Get as close as possible to the timing, level, and attack of the original sample."
+  },
+  {
+    id: "classic",
+    name: "Classic (No Trim)",
+    description: "Save samples exactly as they were decoded, including the delay they start with."
+  },
+  {
+    id: "classic-trimmed",
+    name: "Classic (Trimmed)",
+    description: "Save samples as they were decoded, but remove the delay they start with."
+  }
+];
 
 /**
  * A single settings row: a title with a short description on the left and,
@@ -33,10 +54,11 @@ function SettingRow({ title, description, control, children }: {
 
 export default function SettingsModalContent({ onClose }: { onClose: () => void }) {
   const sampleDir = useCfgSyncedState<string>("sampleDir");
-  const placeholders = useCfgSyncedState<boolean>("placeholders");
-  const trimDelay = useCfgSyncedState<boolean>("trimDelay");
+  const processing = useCfgSyncedState<ProcessingMode>("processing");
   const darkMode = useCfgSyncedState<boolean>("darkMode");
   const checkUpdates = useCfgSyncedState<boolean>("checkUpdates");
+  const developerMode = useCfgSyncedState<boolean>("developerMode");
+  const [logsOpen, setLogsOpen] = useState(false);
 
   async function closeFirstTimeSetup() {
     // Do not dismiss setup until both the folder and configured flag are on
@@ -50,8 +72,15 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
     refreshDarkMode();
   }
 
+  function changeDeveloperMode(enabled: boolean) {
+    mutateCfgSync(enabled, developerMode);
+    setVerbose(enabled);
+  }
+
   return (
     <>
+      { logsOpen && <LogViewerModal onClose={() => setLogsOpen(false)} /> }
+
       <ModalHeader className="flex-row items-center gap-3">
         <ModalIcon className="bg-default text-foreground">
           <Wrench className="size-5" />
@@ -94,30 +123,25 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
           </SettingRow>
 
           <SettingRow
-            title="Placeholder files"
-            description="Drag samples into your DAW before they finish downloading. Some DAWs may not like this."
+            title="Processing"
+            description={ PROCESSING_MODES.find(x => x.id == cfg().processing)?.description ?? "" }
             control={
-              <Switch
-                isSelected={ cfg().placeholders }
-                onChange={ x => mutateCfgSync(x, placeholders) }
-                aria-label="Enable placeholder files"
+              <Select
+                aria-label="Processing"
+                value={ cfg().processing }
+                onChange={ x => mutateCfgSync(x as ProcessingMode, processing) }
+                className="w-48"
               >
-                <SwitchControl><SwitchThumb /></SwitchControl>
-              </Switch>
-            }
-          />
-
-          <SettingRow
-            title="Trim MP3 delay"
-            description="Remove the silence and pre-ringing that MP3 encoding adds to the start of samples."
-            control={
-              <Switch
-                isSelected={ cfg().trimDelay }
-                onChange={ x => mutateCfgSync(x, trimDelay) }
-                aria-label="Trim MP3 delay"
-              >
-                <SwitchControl><SwitchThumb /></SwitchControl>
-              </Switch>
+                <SelectTrigger>
+                  <SelectValue />
+                  <SelectIndicator />
+                </SelectTrigger>
+                <SelectPopover>
+                  <ListBox items={PROCESSING_MODES}>
+                    {x => <ListBoxItem id={x.id} textValue={x.name}>{x.name}<ListBoxItemIndicator /></ListBoxItem>}
+                  </ListBox>
+                </SelectPopover>
+              </Select>
             }
           />
 
@@ -148,6 +172,32 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
               </Switch>
             }
           />
+
+          <SettingRow
+            title="Developer mode"
+            description="Log much more detail. Turn this on, then reproduce your problem before reporting it."
+            control={
+              <Switch
+                isSelected={ cfg().developerMode || import.meta.env.DEV }
+                isDisabled={ import.meta.env.DEV }
+                onChange={ changeDeveloperMode }
+                aria-label="Enable developer mode"
+              >
+                <SwitchControl><SwitchThumb /></SwitchControl>
+              </Switch>
+            }
+          />
+
+          <SettingRow
+            title="Logs"
+            description="Attach these when reporting an issue. They include your searches, sample names, and folder paths."
+            control={
+              <Button variant="outline" className={FIELD_BUTTON_CLASSES}
+                isDisabled={!IN_TAURI}
+                onClick={() => setLogsOpen(true)}
+              >View logs</Button>
+            }
+          />
         </div>
       </ModalBody>
 
@@ -166,6 +216,8 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
           by <Link className="text-xs" href="https://ascpixi.github.io" target="_blank">@ascpixi</Link>
           {" · "}
           <Link className="text-xs" href="https://github.com/ascpixi/splicedd" target="_blank">GitHub</Link>
+          {" · "}
+          <Link className="text-xs" href="https://github.com/ascpixi/splicedd/issues/new" target="_blank">Report an issue</Link>
           {" · "}
           v{__APP_VERSION__}
         </p>

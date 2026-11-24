@@ -6,16 +6,71 @@ import { useEffect, useRef, useState } from "react";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
 import * as wav from "node-wav";
-import { checkDirExists, checkFileExists, createPlaceholder, IS_WINDOWS, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
-import { join } from "@tauri-apps/api/path";
+import { checkDirExists, checkFileExists, IS_WINDOWS, restoreSample, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
+import { basename, dirname, join } from "@tauri-apps/api/path";
+import { save } from "@tauri-apps/plugin-dialog";
 
 import { cfg } from "../../config";
+import { concatBytes, readBody } from "../../download";
 import { DRAG_PREVIEW_ICON } from "../../dragIcon";
-import { SamplePlaybackContext } from "../playback";
+import { PlaybackClaim, PlaybackController } from "../playback";
+import { Mp3Stream, shouldStream } from "../streaming";
 import { SpliceTag } from "../../splice/entities";
 import { SpliceSample, SpliceSamplePack } from "../../splice/api";
-import { decodeSpliceAudio, getMp3SampleRate, MP3_START_DELAY } from "../../splice/decoder";
+import { describeMp3, getMp3SampleRate, MP3_START_DELAY, SpliceAudioDecoder } from "../../splice/decoder";
+import { createLogger, isVerbose, LogSpan, shortUrl } from "../../log";
+import SampleContextMenu, { ContextMenuPosition, isContextMenuPress } from "./SampleContextMenu";
 import Waveform from "./Waveform";
+
+const log = createLogger("sample");
+
+/**
+ * Finds the index of the sample at which the first loud-enough sound of a channel begins,
+ * relative to the peak of its first second. MP3 pre-ringing is quieter than that.
+ */
+function findOnset(channel: Float32Array, sampleRate: number) {
+  const head = channel.subarray(0, sampleRate);
+  const peak = head.reduce((max, x) => Math.max(max, Math.abs(x)), 0);
+  return { peak, onset: head.findIndex(x => Math.abs(x) >= peak * 0.1) };
+}
+
+/** How far the mouse has to be moved for a click to be considered an attempt to drag, in pixels. */
+const DRAG_THRESHOLD = 4;
+
+type MouseTracker = ReturnType<typeof trackMouse>;
+
+/** Tracks what has been done with the mouse since the button was pressed at the given position. */
+function trackMouse(startX: number, startY: number) {
+  const startedAt = performance.now();
+  let releasedAt: number | null = null;
+  let moved = false;
+
+  const handleUp = () => {
+    releasedAt ??= performance.now();
+  };
+
+  const handleMove = (ev: MouseEvent) => {
+    if (releasedAt == null && Math.hypot(ev.clientX - startX, ev.clientY - startY) >= DRAG_THRESHOLD) {
+      moved = true;
+    }
+  };
+
+  window.addEventListener("mouseup", handleUp, { capture: true });
+  window.addEventListener("mousemove", handleMove, { capture: true });
+
+  return {
+    stop: () => {
+      window.removeEventListener("mouseup", handleUp, { capture: true });
+      window.removeEventListener("mousemove", handleMove, { capture: true });
+    },
+
+    /** How long the button was held for, in milliseconds, or `null` if it's still held down. */
+    heldFor: () => releasedAt == null ? null : Math.round(releasedAt - startedAt),
+
+    /** Whether the mouse was moved while the button was held down. */
+    moved: () => moved
+  };
+}
 
 const getChordTypeDisplay = (type: string | null) =>
   type == null ? "" : type == "major" ? " Major" : " Minor";
@@ -27,20 +82,54 @@ export type PackClickHandler = (pack: SpliceSamplePack) => void;
  * Provides a view describing a Splice sample.
  */
 export default function SampleListEntry(
-  { sample, ctx, onTagClick, onPackClick }: {
+  { sample, playback, onTagClick, onPackClick }: {
     sample: SpliceSample,
-    ctx: SamplePlaybackContext,
+    playback: PlaybackController,
     onTagClick: TagClickHandler,
     onPackClick: PackClickHandler
   }
 ) {
-  const [fgLoading, setFgLoading] = useState(false);
+  // Whether we're preparing the sample to be played, dragged, or saved, respectively.
+  const [playPending, setPlayPending] = useState(false);
+  const [dragPending, setDragPending] = useState(false);
+  const [savePending, setSavePending] = useState(false);
+  const fgLoading = playPending || dragPending || savePending;
+
+  // Where the context menu was last opened, or `null` if it's yet to be.
+  const [menuPosition, setMenuPosition] = useState<ContextMenuPosition | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const timesMenuOpened = useRef(0);
+
+  // How much of the sample has been downloaded (0 to 100), or `null` if that's unknown.
+  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   if (audioRef.current == null) {
-    audioRef.current = document.createElement("audio");
+    const element = audioRef.current = document.createElement("audio");
+
+    for (const name of ["loadstart", "loadedmetadata", "canplay", "playing", "waiting", "stalled", "seeking", "seeked", "pause", "ended"]) {
+      element.addEventListener(name, () => log.trace(`audio event: ${name}`, {
+        sample: sample.name,
+        currentTime: element.currentTime,
+        duration: element.duration,
+        readyState: element.readyState
+      }));
+    }
+
+    element.addEventListener("loadedmetadata", () => log.debug("preview metadata loaded", {
+      sample: sample.name,
+      actualMs: element.duration * 1000,
+      expectedMs: sample.duration
+    }));
+
+    element.addEventListener("error", () => log.error("audio element failed", {
+      sample: sample.name,
+      code: element.error?.code,
+      message: element.error?.message
+    }));
   }
 
   const audio = audioRef.current;
@@ -61,13 +150,54 @@ export default function SampleListEntry(
 
     const file = sample.files.find(x => x.asset_file_type_slug == "preview_mp3")!;
 
+    const span = log.span("fetch", { sample: sample.name, url: shortUrl(file.url) });
+
     fetchAhead.current = fetch(file.url);
+
+    // This only observes the request - errors still reach whoever awaits `fetchAhead`.
+    fetchAhead.current.then(
+      resp => span.end("got headers", {
+        status: resp.status,
+        contentLength: resp.headers.get("content-length"),
+        contentType: resp.headers.get("content-type"),
+        contentEncoding: resp.headers.get("content-encoding")
+      }, resp.ok ? "debug" : "error"),
+      err => {
+        span.fail(err);
+        fetchAhead.current = null; // try again the next time
+      }
+    );
   }
 
+  const playbackClaim = useRef<PlaybackClaim | null>(null);
+
   audio.onended = () => {
+    playbackClaim.current?.release();
     setPlaying(false);
     setProgress(0);
   };
+
+  // Streams can run out of audio to play if the download isn't fast enough.
+  audio.onwaiting = () => {
+    if (stream.current != null && playbackClaim.current?.active) {
+      setPlayPending(true);
+    }
+  };
+
+  audio.onplaying = () => {
+    if (playbackClaim.current?.active) {
+      setPlayPending(false);
+    }
+  };
+
+  audio.onerror = () => {
+    if (stream.current != null) {
+      abandonStream(stream.current, audio.error?.message);
+    }
+  };
+
+  // The audio element isn't a part of the DOM, so it would outlive us otherwise.
+  useEffect(() => () => playbackClaim.current?.stop(), []);
 
   // While a sample is playing, keep its waveform's progress marker in
   // sync with the audio element.
@@ -87,94 +217,329 @@ export default function SampleListEntry(
     audio.pause();
     audio.currentTime = 0;
     setPlaying(false);
+    setPlayPending(false);
     setProgress(0);
   }
 
-  async function ensurePlayable() {
-    if (audio.src != "")
-      return;
-
-    setFgLoading(true);
-    try {
-      await ensureAudioDecoded();
-    } finally {
-      setFgLoading(false);
-    }
-
-    audio.src = URL.createObjectURL(
-      new Blob([decodedSample.current!], { "type": "audio/mpeg" })
-    );
-  }
-
   async function handlePlayClick() {
-    ctx.cancellation?.();
-
-    if (playing)
-      return;
-
-    try {
-      await ensurePlayable();
-    } catch (err) {
-      console.error("failed to load sample preview:", err);
+    if (playbackClaim.current?.active) {
+      playbackClaim.current.stop();
       return;
     }
 
-    audio.play();
-    setPlaying(true);
-
-    ctx.setCancellation(() => stop);
+    await play();
   }
 
-  async function handleSeek(target: number) {
-    if (!playing) {
-      ctx.cancellation?.();
+  /** Plays the sample, after downloading it if needed. Stops any other sample. */
+  async function play(seekTo?: number) {
+    const span = log.span("play", { sample: sample.name, durationMs: sample.duration, seekTo });
 
-      try {
-        await ensurePlayable();
-      } catch (err) {
-        console.error("failed to load sample preview:", err);
+    // Downloading can take a while. The user might stop us or play some other sample by
+    // the time it's done, in which case our claim isn't going to be active anymore.
+    const claim = playbackClaim.current = playback.claim(stop);
+
+    try {
+      // Once a streamed sample is complete, it's better to play it as a regular file.
+      if (stream.current != null && decodedSample.current != null) {
+        closeStream();
+      }
+
+      if (audio.src == "") {
+        setPlayPending(true);
+
+        if (decodedSample.current == null && !streamBroken.current && shouldStream(sample.duration)) {
+          startStreaming();
+          span.step("started streaming");
+        }
+        else {
+          await ensureAudioDecoded(span);
+
+          if (!claim.active) {
+            span.end("stopped before it could start");
+            return;
+          }
+
+          audio.src = URL.createObjectURL(
+            new Blob([decodedSample.current!], { "type": "audio/mpeg" })
+          );
+        }
+      }
+
+      // Streams need to wait for some of the audio to be downloaded.
+      setPlayPending(stream.current != null);
+      setPlaying(true);
+
+      const started = audio.play();
+      if (seekTo != null) {
+        seek(seekTo);
+      }
+
+      await started;
+      span.step("started playing", { streaming: stream.current != null });
+      span.end();
+    }
+    catch (err) {
+      if (!claim.active) {
+        span.end("stopped before it could start", { err });
         return;
       }
 
-      audio.play();
-      setPlaying(true);
-      ctx.setCancellation(() => stop);
+      span.fail(err);
+      claim.stop();
+      toast.danger("Couldn't play this sample", { description: "Please try again." });
     }
+  }
 
+  function seek(target: number) {
     // The audio metadata might not be loaded yet right after setting the
     // source, so we compute the seek time from the sample's known duration.
     audio.currentTime = target * (sample.duration / 1000);
     setProgress(target);
   }
 
-  async function ensureAudioDecoded() {
-    if (decodedSample.current != null)
-      return;
+  async function handleSeek(target: number) {
+    if (playing) {
+      seek(target);
+    }
+    else {
+      await play(target);
+    }
+  }
 
-    if (fetchAhead.current == null) {
-      startFetching();
+  /** What the audio element is playing, if the sample is being streamed. */
+  const stream = useRef<Mp3Stream | null>(null);
+
+  /** Whether the sample can't be streamed, and needs to be downloaded before it's played. */
+  const streamBroken = useRef(false);
+
+  /** Makes the audio element play the sample while it's still being downloaded. */
+  function startStreaming() {
+    const span = log.span("stream", { sample: sample.name, durationMs: sample.duration });
+
+    const current: Mp3Stream = new Mp3Stream(sample.duration, err => abandonStream(current, err));
+    stream.current = current;
+    audio.src = current.url;
+
+    const downloaded = ensureAudioDecoded(span);
+
+    // We might've already been downloading by then, e.g. because of the user dragging us.
+    for (const part of downloadedParts.current) {
+      current.push(part);
     }
 
-    const resp = await fetchAhead.current!;
-    const data = await resp.arrayBuffer();
-    decodedSample.current = decodeSpliceAudio(new Uint8Array(data));
+    downloaded.then(
+      () => {
+        current.end();
+        span.end();
+      },
+      err => {
+        span.fail(err);
+
+        if (stream.current != current)
+          return;
+
+        closeStream();
+
+        if (playbackClaim.current?.active) {
+          playbackClaim.current.stop();
+          toast.danger("Couldn't play this sample", { description: "Please try again." });
+        }
+      }
+    );
+  }
+
+  /** Detaches the stream (if there's one) from the audio element. */
+  function closeStream() {
+    if (stream.current == null)
+      return;
+
+    stream.current.close();
+    stream.current = null;
+    audio.removeAttribute("src");
+    audio.load();
+  }
+
+  /** Gives up on a stream that can't be played, resorting to playing the sample after it's downloaded. */
+  function abandonStream(target: Mp3Stream, err: unknown) {
+    if (stream.current != target)
+      return;
+
+    const position = audio.currentTime / (sample.duration / 1000);
+    log.warn("couldn't stream the sample - downloading it first", { sample: sample.name, position, err });
+
+    streamBroken.current = true;
+    closeStream();
+
+    if (playbackClaim.current?.active) {
+      play(position);
+    }
+  }
+
+  const download = useRef<Promise<void> | null>(null);
+
+  /** The parts of the sample that the ongoing download has received so far. Empty if there's none. */
+  const downloadedParts = useRef<Uint8Array[]>([]);
+
+  async function ensureAudioDecoded(span: LogSpan) {
+    if (decodedSample.current != null) {
+      span.log("debug", "already downloaded");
+      return;
+    }
+
+    // The body of a response can be read only once, so if we're already being downloaded
+    // (e.g. because of the user both playing and dragging us), wait for that to finish.
+    if (download.current != null) {
+      span.log("debug", "already downloading");
+      await download.current;
+      span.step("waited for an ongoing download");
+      return;
+    }
+
+    download.current = downloadAudio(span);
+    try {
+      await download.current;
+    }
+    finally {
+      download.current = null;
+    }
+  }
+
+  async function downloadAudio(span: LogSpan) {
+    startFetching();
+
+    try {
+      const resp = await fetchAhead.current!;
+      span.step("waited for headers", { status: resp.status });
+
+      if (!resp.ok)
+        throw new Error(`Splice returned HTTP ${resp.status}`);
+
+      const decoder = new SpliceAudioDecoder();
+
+      const bytes = await readBody(
+        resp,
+        chunk => {
+          const part = decoder.push(chunk);
+          downloadedParts.current.push(part);
+          stream.current?.push(part);
+        },
+        // Rounding the progress makes most of the updates not cause a re-render.
+        x => setDownloadProgress(Math.round(x * 100))
+      );
+
+      decodedSample.current = concatBytes(downloadedParts.current);
+      span.step("read body", {
+        bytes,
+        contentLength: resp.headers.get("content-length"),
+        mp3: describeMp3(decodedSample.current)
+      });
+    }
+    catch (err) {
+      fetchAhead.current = null; // the response can't be reused
+      throw err;
+    }
+    finally {
+      downloadedParts.current = [];
+      setDownloadProgress(null);
+    }
   }
 
   const sanitizePath = (x: string) => x.replace(/[<>:"|?* ]/g, "_");
 
+  /** Incremented each time the user attempts to drag the sample. */
+  const dragAttempt = useRef(0);
+
+  /** The ongoing export of the sample, if any. */
+  const pendingExport = useRef<Promise<void> | null>(null);
+
   async function handleDrag(ev: React.MouseEvent<HTMLDivElement, MouseEvent>) {
+    if (ev.button != 0 || isContextMenuPress(ev))
+      return;
+
     // Verify that the parent of the element that we began the dragging from
     // is not explicitly marked as non-draggable (as it may be clicked etc.)
     const dragOrigin = document.elementFromPoint(ev.clientX, ev.clientY)?.parentElement;
     if (dragOrigin != null && dragOrigin.dataset.draggable === "false") {
+      log.trace("ignoring drag from a non-draggable element", { sample: sample.name });
       return;
     }
 
+    const span = log.span("drag", {
+      sample: sample.name,
+      uuid: sample.uuid,
+      durationMs: sample.duration,
+      alreadyBusy: fgLoading,
+      processing: cfg().processing
+    });
+
+    // Preparing a sample takes a while, and the OS only lets us start a drag if
+    // the mouse button is still held down by the time we're done.
+    const mouse = trackMouse(ev.clientX, ev.clientY);
+    const attempt = ++dragAttempt.current;
+
+    try {
+      const started = await prepareAndDrag(span, mouse);
+
+      // Don't bother the user if they've merely clicked, or if they're already trying again.
+      if (started === false && mouse.moved() && attempt == dragAttempt.current) {
+        toast.success("Sample ready", { description: "It has finished downloading. Drag it again to use it." });
+      }
+    }
+    catch (err) {
+      span.fail(err, { mouseHeldForMs: mouse.heldFor() });
+
+      if (attempt == dragAttempt.current) {
+        toast.danger("Couldn't prepare this sample", { description: "Please try dragging it again." });
+      }
+    }
+    finally {
+      if (attempt == dragAttempt.current) {
+        setDragPending(false);
+      }
+
+      span.end("done", { mouseHeldForMs: mouse.heldFor() });
+      mouse.stop();
+    }
+  }
+
+  /**
+   * Hands the drag of the given file over to the OS, unless the mouse has already been released -
+   * the file would be immediately dropped onto whatever happens to be under the cursor.
+   * @returns Whether the drag was started.
+   */
+  function beginDrag(path: string, span: LogSpan, mouse: MouseTracker) {
+    const startedAt = performance.now();
+    const elapsedMs = () => performance.now() - startedAt;
+
+    const heldFor = mouse.heldFor();
+    if (heldFor != null) {
+      span.log("warn", "the mouse was released before the drag could start", { mouseHeldForMs: heldFor });
+      return false;
+    }
+
+    span.step("requested OS drag", { path });
+
+    startDrag({ item: [path], icon: DRAG_PREVIEW_ICON }, ev => span.log("info", "OS drag finished", {
+      result: ev.result, cursorPos: ev.cursorPos, elapsedMs: elapsedMs()
+    })).then(
+      () => span.log("debug", "startDrag returned", { elapsedMs: elapsedMs() }),
+      err => span.log("error", "OS drag failed", { err, elapsedMs: elapsedMs() })
+    );
+
+    return true;
+  }
+
+  /**
+   * Makes sure that the sample is present in the sample folder, and drags it.
+   * @returns Whether the drag was started, or `null` if the sample can't be dragged at all.
+   */
+  async function prepareAndDrag(span: LogSpan, mouse: MouseTracker) {
     if (!await checkDirExists(cfg().sampleDir)) {
+      span.end("sample folder not found", { sampleDir: cfg().sampleDir }, "warn");
       toast.danger("Sample folder not found", {
         description: "Choose an existing sample folder in the settings to drag samples into your DAW."
       });
-      return;
+      return null;
     }
 
     // Windows' shell can't drag files whose path is longer than MAX_PATH - the
@@ -198,73 +563,221 @@ export default function SampleListEntry(
     }
 
     if (samplePath == null) {
+      span.end("path too long", { fullPath, length: fullPath.length }, "warn");
       toast.danger("Can't drag this sample", {
         description: "The path to your sample folder is too long for Windows. Choose a shorter one in the settings."
       });
-      return;
+      return null;
     }
 
-    const dragParams = {
-      item: [fullPath],
-      icon: DRAG_PREVIEW_ICON
-    };
+    span.step("resolved path", { fullPath });
 
-    setFgLoading(true);
-    try {
-      await ensureAudioDecoded();
+    // A file that's still being written to exists, but isn't complete.
+    if (pendingExport.current == null && await checkFileExists(cfg().sampleDir, samplePath)) {
+      span.step("found existing file");
+      return beginDrag(fullPath, span, mouse);
+    }
 
-      if (!await checkFileExists(cfg().sampleDir, samplePath)) {
-        if (cfg().placeholders) {
-          await createPlaceholder(cfg().sampleDir, samplePath);
-          startDrag(dragParams);
-        }
+    setDragPending(true);
+    await ensureAudioDecoded(span);
 
-        // decodeAudioData resamples to the context's rate, so decode at the MP3's
-        // own rate - this keeps the output unaltered and MP3_START_DELAY exact.
-        const sampleRate = getMp3SampleRate(decodedSample.current!) ?? 44100;
-        const actx = new OfflineAudioContext(1, 1, sampleRate);
+    pendingExport.current ??= exportSample(cfg().sampleDir, samplePath, span)
+      .finally(() => pendingExport.current = null);
 
-        // decodeAudioData detaches the buffer we give it, so pass a copy to
-        // keep the decoded sample usable for playback afterwards.
-        const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
-        const channels: Float32Array[] = [];
+    await pendingExport.current;
 
-        if (samples.length < 60 * samples.sampleRate) {
-          for (let i = 0; i < samples.numberOfChannels; i++) {
-            const chan = samples.getChannelData(i);
+    return beginDrag(fullPath, span, mouse);
+  }
 
-            const start = cfg().trimDelay ? MP3_START_DELAY : 0;
-            const end = cfg().trimDelay
-              ? Math.round((sample.duration / 1000) * samples.sampleRate) + start
-              : chan.length;
+  /**
+   * Keeps the list from scrolling towards the mouse when it's moved past the list's edge with
+   * the button held down, e.g. while dragging a sample that's still being downloaded.
+   */
+  function preventAutoscroll(ev: React.MouseEvent) {
+    // Controls can't be dragged, and have to be able to receive focus.
+    if (ev.button != 0 || isContextMenuPress(ev) || (ev.target as Element).closest("button, [tabindex]"))
+      return;
 
-            channels.push(chan.subarray(start, end));
-          }
-        } else {
-          // processing big samples may result in memory allocation errors (it sure did for me!!)
-          console.warn(`big boi detected of ${samples.length} samples - not pre-processing!`);
-        }
+    ev.preventDefault();
 
-        await writeSampleFile(cfg().sampleDir, samplePath, wav.encode(channels as unknown as ArrayBuffer[], {
-          bitDepth: 16,
-          sampleRate: samples.sampleRate
-        }));
-
-        if (!cfg().placeholders) {
-          startDrag(dragParams);
-        }
-      } else {
-        startDrag(dragParams);
-      }
-    } catch (err) {
-      console.error("failed to prepare sample for dragging:", err);
-    } finally {
-      setFgLoading(false);
+    // The above also makes whatever is focused (e.g. the search field) stay that way.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
     }
   }
 
-  return (
-    <div onMouseOver={startFetching}
+  function handleContextMenu(ev: React.MouseEvent) {
+    ev.preventDefault();
+    timesMenuOpened.current++;
+    setMenuPosition({ x: ev.clientX, y: ev.clientY });
+    setMenuOpen(true);
+  }
+
+  /** Lets the user choose where to save the sample, and saves it there. */
+  async function handleDownload() {
+    const span = log.span("save", {
+      sample: sample.name,
+      uuid: sample.uuid,
+      durationMs: sample.duration,
+      processing: cfg().processing
+    });
+
+    try {
+      let path = await save({
+        title: "Download sample",
+        defaultPath: sanitizePath(sample.name.split("/").pop()!),
+        filters: [{ name: "WAV audio", extensions: ["wav"] }]
+      });
+
+      if (path == null) {
+        span.end("cancelled");
+        return;
+      }
+
+      span.step("chose path", { path });
+
+      // Not every platform's dialog adds the extension if the user leaves it out.
+      const hasExtension = path.toLowerCase().endsWith(".wav");
+      if (!hasExtension) {
+        path += ".wav";
+      }
+
+      const dir = await dirname(path);
+      const fileName = await basename(path);
+
+      // The dialog couldn't have asked about overwriting a file with a different name.
+      if (!hasExtension && await checkFileExists(dir, fileName)) {
+        span.end("file already exists", { path }, "warn");
+        toast.danger("Couldn't download this sample", {
+          description: `${fileName} already exists in that folder. Please choose another name.`
+        });
+        return;
+      }
+
+      setSavePending(true);
+      await ensureAudioDecoded(span);
+      await writeSampleFile(dir, fileName, await encodeSample(span));
+      span.step("wrote file");
+      span.end();
+
+      toast.success("Sample downloaded", { description: `Saved as ${fileName}.` });
+    }
+    catch (err) {
+      span.fail(err);
+      toast.danger("Couldn't download this sample", { description: "Please try again, or choose another folder." });
+    }
+    finally {
+      setSavePending(false);
+    }
+  }
+
+  /** Converts the (already downloaded) sample to a WAV file in the sample folder. */
+  async function exportSample(baseDir: string, samplePath: string, span: LogSpan) {
+    await writeSampleFile(baseDir, samplePath, await encodeSample(span));
+    span.step("wrote file");
+  }
+
+  /** Converts the (already downloaded) sample to WAV, using the processing mode that the user has chosen. */
+  async function encodeSample(span: LogSpan): Promise<Uint8Array> {
+    const mode = cfg().processing;
+
+    if (mode == "accurate") {
+      try {
+        const restored = await restoreSample(
+          decodedSample.current!, sample.duration,
+          sample.asset_category_slug == "loop" ? sample.bpm : null
+        );
+
+        span.step("restored", { bytes: restored.byteLength });
+        return restored;
+      }
+      catch (err) {
+        span.log("warn", "couldn't restore the sample - decoding it as-is", { err });
+      }
+    }
+
+    return await decodeSample(span, mode != "classic");
+  }
+
+  /**
+   * Converts the (already downloaded) sample to WAV as-is.
+   * @param trim Whether to trim off the delay that MP3s start with.
+   */
+  async function decodeSample(span: LogSpan, trim: boolean) {
+    // decodeAudioData resamples to the context's rate, so decode at the MP3's
+    // own rate - this keeps the output unaltered and MP3_START_DELAY exact.
+    const sampleRate = getMp3SampleRate(decodedSample.current!) ?? 44100;
+    const actx = new OfflineAudioContext(1, 1, sampleRate);
+
+    // decodeAudioData detaches the buffer we give it, so pass a copy to
+    // keep the decoded sample usable for playback afterwards.
+    span.log("debug", "decoding", { sampleRate, mp3Bytes: decodedSample.current!.byteLength });
+    const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
+
+    const expectedLength = Math.round((sample.duration / 1000) * samples.sampleRate);
+    span.step("decoded MP3", {
+      length: samples.length,
+      expectedLength,
+      excess: samples.length - expectedLength,
+      channels: samples.numberOfChannels,
+      sampleRate: samples.sampleRate,
+      pcmBytes: samples.length * samples.numberOfChannels * 4
+    });
+
+    if (isVerbose()) {
+      span.log("debug", "onset before trimming", {
+        channels: Array.from(
+          { length: samples.numberOfChannels },
+          (_, i) => findOnset(samples.getChannelData(i), samples.sampleRate)
+        ),
+        mp3StartDelay: MP3_START_DELAY
+      });
+    }
+
+    const channels: Float32Array[] = [];
+
+    for (let i = 0; i < samples.numberOfChannels; i++) {
+      const chan = samples.getChannelData(i);
+
+      const start = trim ? MP3_START_DELAY : 0;
+      const end = trim
+        ? Math.round((sample.duration / 1000) * samples.sampleRate) + start
+        : chan.length;
+
+      // This is merely a view, so it's cheap even for really long samples.
+      channels.push(chan.subarray(start, end));
+
+      span.log("debug", "trimmed channel", {
+        channel: i, start, end, available: chan.length, resultLength: channels[i].length
+      });
+
+      if (end > chan.length) {
+        span.log("warn", "the decoded audio is shorter than expected", {
+          channel: i, missingSamples: end - chan.length
+        });
+      }
+    }
+
+    const encoded = wav.encode(channels as unknown as ArrayBuffer[], {
+      bitDepth: 16,
+      sampleRate: samples.sampleRate
+    });
+    span.step("encoded WAV", { bytes: encoded.byteLength, channels: channels.length });
+
+    return encoded;
+  }
+
+  return (<>
+    {menuPosition != null &&
+      <SampleContextMenu
+        key={timesMenuOpened.current} // it can't be moved or re-focused while it's still fading out
+        position={menuPosition}
+        isOpen={menuOpen}
+        onOpenChange={setMenuOpen}
+        onDownload={handleDownload}
+      />}
+
+    <div onMouseOver={startFetching} onMouseDown={preventAutoscroll} onContextMenu={handleContextMenu}
       className={`group flex w-full px-3 py-2 gap-6 rounded-2xl transition-colors
                     items-center hover:bg-surface-secondary cursor-grab select-none`}
     >
@@ -302,14 +815,19 @@ export default function SampleListEntry(
         <button
           type="button"
           onClick={handlePlayClick}
-          aria-label={playing ? "Stop playback" : "Play sample"}
+          aria-label={playing ? "Stop playback" : playPending ? "Cancel playback" : "Play sample"}
           data-draggable="false"
           className={`flex items-center justify-center w-8 h-8 rounded-full shrink-0
                       cursor-pointer transition-colors hover:bg-surface-tertiary
                       ${playing ? "text-accent" : "text-current"}`}
         >
           {fgLoading
-            ? <ProgressCircle aria-label="Loading sample..." className="h-6" isIndeterminate>
+            ? <ProgressCircle
+                aria-label="Loading sample..."
+                className="h-6"
+                isIndeterminate={downloadProgress == null}
+                value={downloadProgress ?? 0}
+              >
                 <ProgressCircleTrack>
                   <ProgressCircleTrackCircle />
                   <ProgressCircleFillCircle />
@@ -374,5 +892,5 @@ export default function SampleListEntry(
         </div>
       </div>
     </div>
-  );
+  </>);
 }

@@ -21,7 +21,9 @@ function helper(fetch, { internals = false, pageOrigin = origin } = {}) {
   let timerId = 0;
   const event = {
     listen: async (name, handler) => { listeners.set(name, handler); },
-    emit: async (name, payload) => { emitted.push({ name, payload }); }
+    emit: async (name, payload) => {
+      if (name !== "splice-helper-log") emitted.push({ name, payload });
+    }
   };
   const window = internals ? {
     __TAURI_INTERNALS__: {
@@ -31,7 +33,7 @@ function helper(fetch, { internals = false, pageOrigin = origin } = {}) {
     }
   } : { __TAURI__: { event } };
   const context = vm.createContext({
-    window, location: { origin: pageOrigin }, URL, AbortController, console, fetch,
+    window, location: { origin: pageOrigin, pathname: "/graphql" }, URL, AbortController, console, fetch,
     setTimeout: (fn, delay) => { const id = ++timerId; timers.set(id, { fn, delay }); return id; },
     clearTimeout: id => timers.delete(id)
   });

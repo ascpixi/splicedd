@@ -1,66 +1,141 @@
+use std::borrow::Cow;
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
-#[tauri::command]
-pub async fn write_sample_file(base_dir: String, relative_path: String, buffer: Vec<u8>) -> Result<(), String> {
-    if !relative_path.ends_with(".wav") {
-        return Err("The relative path must end with .wav".into());
-    }
+use serde::Deserialize;
+use tauri::ipc::{InvokeBody, Request};
 
-    let mut full_path = PathBuf::from(base_dir);
-    full_path.push(relative_path);
+use crate::logging::ms;
 
-    if let Some(parent_dir) = full_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent_dir) {
-            return Err(format!("Failed to create directories for {full_path:#?}: {e}"));
-        }
-    } else {
-        return Err("Failed to determine parent directory".into());
-    }
+/// Logs the error that a command is about to fail with.
+pub fn fail<T>(message: String) -> Result<T, String> {
+    log::error!("{message}");
+    Err(message)
+}
 
-    match File::create(&full_path) {
-        Ok(mut file) => {
-            if let Err(e) = file.write_all(&buffer) {
-                return Err(format!("Failed to write to file: {}", e));
-            }
-        },
-        Err(e) => {
-            return Err(format!("Failed to create file: {}", e));
-        }
+fn create_parent_dirs(full_path: &Path) -> Result<(), String> {
+    let Some(parent_dir) = full_path.parent() else {
+        return fail("Failed to determine parent directory".into());
+    };
+
+    if let Err(e) = fs::create_dir_all(parent_dir) {
+        return fail(format!("Failed to create directories for {full_path:#?}: {e}"));
     }
 
     Ok(())
 }
 
+/// The header that describes where to write the body of a `write_sample_file` request to.
+const SAMPLE_FILE_HEADER: &str = "sample-file";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SampleFile {
+    base_dir: String,
+    relative_path: String,
+}
+
+fn parse_sample_file(request: &Request) -> Result<SampleFile, String> {
+    let header = request.headers().get(SAMPLE_FILE_HEADER)
+        .ok_or_else(|| format!("Missing the {SAMPLE_FILE_HEADER} header"))?;
+
+    serde_json::from_slice(header.as_bytes())
+        .map_err(|e| format!("Malformed {SAMPLE_FILE_HEADER} header: {e}"))
+}
+
+/// Reads the bytes that make up the body of a request.
+pub fn read_body<'a>(request: &'a Request) -> Result<Cow<'a, [u8]>, String> {
+    match request.body() {
+        InvokeBody::Raw(bytes) => Ok(Cow::Borrowed(bytes)),
+
+        // When the webview can't use the custom IPC protocol, everything ends up being JSON.
+        InvokeBody::Json(value) => Vec::<u8>::deserialize(value)
+            .map(Cow::Owned)
+            .map_err(|e| format!("Malformed sample data: {e}")),
+    }
+}
+
+/// Writes the body of the request to a file. Samples can be really big, so they're sent over
+/// as raw bytes, as opposed to a JSON array of numbers.
+#[tauri::command]
+pub async fn write_sample_file(request: Request<'_>) -> Result<(), String> {
+    let SampleFile { base_dir, relative_path } = match parse_sample_file(&request) {
+        Ok(file) => file,
+        Err(e) => return fail(e),
+    };
+
+    let buffer = match read_body(&request) {
+        Ok(buffer) => buffer,
+        Err(e) => return fail(e),
+    };
+
+    // By the time we get here, the (potentially huge) buffer has already been sent over
+    // and deserialized. Comparing the time of this message to the one logged by the
+    // frontend just before invoking the command tells how long that took.
+    log::debug!("write_sample_file: received {} bytes for {relative_path:?}", buffer.len());
+
+    let started = Instant::now();
+
+    if !relative_path.to_ascii_lowercase().ends_with(".wav") {
+        return fail(format!("The relative path must end with .wav (got {relative_path:?})"));
+    }
+
+    let mut full_path = PathBuf::from(base_dir);
+    full_path.push(relative_path);
+
+    create_parent_dirs(&full_path)?;
+    let dirs_created = started.elapsed();
+
+    match File::create(&full_path) {
+        Ok(mut file) => {
+            if let Err(e) = file.write_all(&buffer) {
+                // A partially written file would be mistaken for a complete one later on.
+                drop(file);
+                let _ = fs::remove_file(&full_path);
+                return fail(format!("Failed to write to file {full_path:?}: {e}"));
+            }
+        },
+        Err(e) => {
+            return fail(format!("Failed to create file {full_path:?}: {e}"));
+        }
+    }
+
+    log::info!(
+        "wrote {} bytes to {full_path:?} in {} (of which creating directories took {})",
+        buffer.len(), ms(started.elapsed()), ms(dirs_created)
+    );
+
+    Ok(())
+}
+
+/// Checks if a file exists, and that it isn't empty. Empty files are either the remains of
+/// a failed download, or placeholders left behind by older versions of Splicedd.
 #[tauri::command]
 pub async fn file_exists(base_dir: String, relative_path: String) -> Result<bool, String> {
     let mut full_path = PathBuf::from(base_dir);
     full_path.push(relative_path);
 
-    Ok(full_path.exists())
+    match fs::metadata(&full_path) {
+        Ok(meta) if meta.len() == 0 => {
+            log::warn!("file_exists: {full_path:?} exists, but is empty");
+            Ok(false)
+        },
+        Ok(meta) => {
+            log::debug!("file_exists: {full_path:?} exists ({} bytes)", meta.len());
+            Ok(true)
+        },
+        Err(e) => {
+            log::debug!("file_exists: {full_path:?} isn't accessible: {e}");
+            Ok(false)
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn dir_exists(path: String) -> Result<bool, String> {
-    Ok(!path.trim().is_empty() && PathBuf::from(path).is_dir())
-}
-
-#[tauri::command]
-pub async fn create_placeholder_file(base_dir: String, relative_path: String) -> Result<(), String> {
-    let mut full_path = PathBuf::from(base_dir);
-    full_path.push(relative_path);
-
-    if let Some(parent_dir) = full_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent_dir) {
-            return Err(format!("Failed to create directories for {full_path:#?}: {e}"));
-        }
-    } else {
-        return Err("Failed to determine parent directory".into());
-    }
-
-    match File::create(&full_path) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("Failed to create file: {}", e)),
-    }
+    let exists = !path.trim().is_empty() && PathBuf::from(&path).is_dir();
+    log::trace!("dir_exists: {path:?} -> {exists}");
+    Ok(exists)
 }
