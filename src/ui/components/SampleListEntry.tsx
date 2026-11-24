@@ -470,6 +470,23 @@ export default function SampleListEntry(
     return beginDrag(fullPath, span, mouse);
   }
 
+  /**
+   * Keeps the list from scrolling towards the mouse when it's moved past the list's edge with
+   * the button held down, e.g. while dragging a sample that's still being downloaded.
+   */
+  function preventAutoscroll(ev: React.MouseEvent) {
+    // Controls can't be dragged, and have to be able to receive focus.
+    if (ev.button != 0 || isContextMenuPress(ev) || (ev.target as Element).closest("button, [tabindex]"))
+      return;
+
+    ev.preventDefault();
+
+    // The above also makes whatever is focused (e.g. the search field) stay that way.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+
   function handleContextMenu(ev: React.MouseEvent) {
     ev.preventDefault();
     timesMenuOpened.current++;
@@ -641,7 +658,7 @@ export default function SampleListEntry(
         onDownload={handleDownload}
       />}
 
-    <div onMouseOver={startFetching} onContextMenu={handleContextMenu}
+    <div onMouseOver={startFetching} onMouseDown={preventAutoscroll} onContextMenu={handleContextMenu}
       className={`group flex w-full px-3 py-2 gap-6 rounded-2xl transition-colors
                     items-center hover:bg-surface-secondary cursor-grab select-none`}
     >
