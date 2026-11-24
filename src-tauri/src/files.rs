@@ -10,7 +10,7 @@ use tauri::ipc::{InvokeBody, Request};
 use crate::logging::ms;
 
 /// Logs the error that a command is about to fail with.
-fn fail<T>(message: String) -> Result<T, String> {
+pub fn fail<T>(message: String) -> Result<T, String> {
     log::error!("{message}");
     Err(message)
 }
@@ -45,6 +45,18 @@ fn parse_sample_file(request: &Request) -> Result<SampleFile, String> {
         .map_err(|e| format!("Malformed {SAMPLE_FILE_HEADER} header: {e}"))
 }
 
+/// Reads the bytes that make up the body of a request.
+pub fn read_body<'a>(request: &'a Request) -> Result<Cow<'a, [u8]>, String> {
+    match request.body() {
+        InvokeBody::Raw(bytes) => Ok(Cow::Borrowed(bytes)),
+
+        // When the webview can't use the custom IPC protocol, everything ends up being JSON.
+        InvokeBody::Json(value) => Vec::<u8>::deserialize(value)
+            .map(Cow::Owned)
+            .map_err(|e| format!("Malformed sample data: {e}")),
+    }
+}
+
 /// Writes the body of the request to a file. Samples can be really big, so they're sent over
 /// as raw bytes, as opposed to a JSON array of numbers.
 #[tauri::command]
@@ -54,14 +66,9 @@ pub async fn write_sample_file(request: Request<'_>) -> Result<(), String> {
         Err(e) => return fail(e),
     };
 
-    let buffer: Cow<[u8]> = match request.body() {
-        InvokeBody::Raw(bytes) => Cow::Borrowed(bytes),
-
-        // When the webview can't use the custom IPC protocol, everything ends up being JSON.
-        InvokeBody::Json(value) => match Vec::<u8>::deserialize(value) {
-            Ok(bytes) => Cow::Owned(bytes),
-            Err(e) => return fail(format!("Malformed sample data: {e}")),
-        },
+    let buffer = match read_body(&request) {
+        Ok(buffer) => buffer,
+        Err(e) => return fail(e),
     };
 
     // By the time we get here, the (potentially huge) buffer has already been sent over

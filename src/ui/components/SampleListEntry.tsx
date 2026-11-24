@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
 import * as wav from "node-wav";
-import { checkDirExists, checkFileExists, createPlaceholder, IS_WINDOWS, removePlaceholder, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
+import { checkDirExists, checkFileExists, createPlaceholder, IS_WINDOWS, removePlaceholder, restoreSample, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
 import { basename, dirname, join } from "@tauri-apps/api/path";
 import { save } from "@tauri-apps/plugin-dialog";
 
@@ -351,7 +351,7 @@ export default function SampleListEntry(
       durationMs: sample.duration,
       alreadyBusy: fgLoading,
       placeholders: cfg().placeholders,
-      trimDelay: cfg().trimDelay
+      processing: cfg().processing
     });
 
     // Preparing a sample takes a while, and the OS only lets us start a drag if
@@ -491,7 +491,7 @@ export default function SampleListEntry(
       sample: sample.name,
       uuid: sample.uuid,
       durationMs: sample.duration,
-      trimDelay: cfg().trimDelay
+      processing: cfg().processing
     });
 
     try {
@@ -556,8 +556,33 @@ export default function SampleListEntry(
     }
   }
 
-  /** Converts the (already downloaded) sample to WAV. */
-  async function encodeSample(span: LogSpan) {
+  /** Converts the (already downloaded) sample to WAV, using the processing mode that the user has chosen. */
+  async function encodeSample(span: LogSpan): Promise<Uint8Array> {
+    const mode = cfg().processing;
+
+    if (mode == "accurate") {
+      try {
+        const restored = await restoreSample(
+          decodedSample.current!, sample.duration,
+          sample.asset_category_slug == "loop" ? sample.bpm : null
+        );
+
+        span.step("restored", { bytes: restored.byteLength });
+        return restored;
+      }
+      catch (err) {
+        span.log("warn", "couldn't restore the sample - decoding it as-is", { err });
+      }
+    }
+
+    return await decodeSample(span, mode != "classic");
+  }
+
+  /**
+   * Converts the (already downloaded) sample to WAV as-is.
+   * @param trim Whether to trim off the delay that MP3s start with.
+   */
+  async function decodeSample(span: LogSpan, trim: boolean) {
     // decodeAudioData resamples to the context's rate, so decode at the MP3's
     // own rate - this keeps the output unaltered and MP3_START_DELAY exact.
     const sampleRate = getMp3SampleRate(decodedSample.current!) ?? 44100;
@@ -593,8 +618,8 @@ export default function SampleListEntry(
     for (let i = 0; i < samples.numberOfChannels; i++) {
       const chan = samples.getChannelData(i);
 
-      const start = cfg().trimDelay ? MP3_START_DELAY : 0;
-      const end = cfg().trimDelay
+      const start = trim ? MP3_START_DELAY : 0;
+      const end = trim
         ? Math.round((sample.duration / 1000) * samples.sampleRate) + start
         : chan.length;
 

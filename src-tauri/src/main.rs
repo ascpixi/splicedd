@@ -5,6 +5,7 @@ mod files;
 mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
+mod restore;
 mod updater;
 
 use tauri::webview::PageLoadEvent;
@@ -210,6 +211,7 @@ fn main() {
             files::dir_exists,
             files::create_placeholder_file,
             files::remove_placeholder_file,
+            restore::restore_sample,
             updater::fetch_releases,
             updater::install_update,
             logging::write_log_entries,

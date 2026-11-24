@@ -7,14 +7,19 @@ import { createLogger } from "./log";
 const log = createLogger("config");
 
 /**
+ * How samples are processed before they're exported. "accurate" restores them to what they were before
+ * they were encoded as MP3s, while the classic modes merely decode them.
+ */
+export type ProcessingMode = "accurate" | "classic" | "classic-trimmed";
+
+/**
  * Represents the user configuration file of Splicedd.
  */
 export interface SpliceddConfig {
   sampleDir: string;
   placeholders: boolean;
 
-  /** Whether to trim the MP3 encoder/decoder delay off the start of exported samples. */
-  trimDelay: boolean;
+  processing: ProcessingMode;
   darkMode: boolean;
   checkUpdates: boolean;
 
@@ -35,7 +40,7 @@ function defaultCfg(): SpliceddConfig {
     sampleDir: "",
     darkMode: true,
     placeholders: false,
-    trimDelay: true,
+    processing: "accurate",
     checkUpdates: true,
     skippedUpdateVersion: "",
     developerMode: false,
@@ -81,7 +86,11 @@ export async function loadConfig() {
     const raw = await readTextFile("config.json", {
       baseDir: BaseDirectory.AppConfig,
     });
-    globalCfg = { ...defaultCfg(), ...JSON.parse(raw) };
+
+    // "trimDelay" has been replaced by "processing". It's ignored on purpose - regardless
+    // of what it was set to, everyone starts out with the default processing mode.
+    const { trimDelay: _, ...saved } = JSON.parse(raw);
+    globalCfg = { ...defaultCfg(), ...saved };
 
     log.info("config loaded", { config: globalCfg });
   }

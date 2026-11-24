@@ -1,13 +1,31 @@
 import { ReactNode, useState } from "react";
-import { Button, InputGroup, InputGroupInput, InputGroupPrefix, Link, ModalBody, ModalFooter, ModalHeader, ModalHeading, ModalIcon, Switch, SwitchControl, SwitchThumb } from "@heroui/react";
+import { Button, InputGroup, InputGroupInput, InputGroupPrefix, Link, ListBox, ListBoxItem, ListBoxItemIndicator, ModalBody, ModalFooter, ModalHeader, ModalHeading, ModalIcon, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue, Switch, SwitchControl, SwitchThumb } from "@heroui/react";
 import { FolderOpen, Wrench } from "lucide-react";
 import BrowseButton from "./BrowseButton";
 import LogViewerModal from "./LogViewerModal";
-import { cfg, mutateCfg, mutateCfgSync, useCfgSyncedState } from "../../config";
+import { ProcessingMode, cfg, mutateCfg, mutateCfgSync, useCfgSyncedState } from "../../config";
 import { IN_TAURI } from "../../native";
 import { setVerbose } from "../../log";
 import { refreshDarkMode } from "../theming";
 import { FIELD_BUTTON_CLASSES } from "../fieldStyles";
+
+const PROCESSING_MODES: { id: ProcessingMode, name: string, description: string }[] = [
+  {
+    id: "accurate",
+    name: "Accurate",
+    description: "Get as close as possible to the timing, level, and attack of the original sample."
+  },
+  {
+    id: "classic",
+    name: "Classic (No Trim)",
+    description: "Save samples exactly as they were decoded, including the delay they start with."
+  },
+  {
+    id: "classic-trimmed",
+    name: "Classic (Trimmed)",
+    description: "Save samples as they were decoded, but remove the delay they start with."
+  }
+];
 
 /**
  * A single settings row: a title with a short description on the left and,
@@ -37,7 +55,7 @@ function SettingRow({ title, description, control, children }: {
 export default function SettingsModalContent({ onClose }: { onClose: () => void }) {
   const sampleDir = useCfgSyncedState<string>("sampleDir");
   const placeholders = useCfgSyncedState<boolean>("placeholders");
-  const trimDelay = useCfgSyncedState<boolean>("trimDelay");
+  const processing = useCfgSyncedState<ProcessingMode>("processing");
   const darkMode = useCfgSyncedState<boolean>("darkMode");
   const checkUpdates = useCfgSyncedState<boolean>("checkUpdates");
   const developerMode = useCfgSyncedState<boolean>("developerMode");
@@ -120,16 +138,25 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
           />
 
           <SettingRow
-            title="Trim MP3 delay"
-            description="Remove the silence and pre-ringing that MP3 encoding adds to the start of samples."
+            title="Processing"
+            description={ PROCESSING_MODES.find(x => x.id == cfg().processing)?.description ?? "" }
             control={
-              <Switch
-                isSelected={ cfg().trimDelay }
-                onChange={ x => mutateCfgSync(x, trimDelay) }
-                aria-label="Trim MP3 delay"
+              <Select
+                aria-label="Processing"
+                value={ cfg().processing }
+                onChange={ x => mutateCfgSync(x as ProcessingMode, processing) }
+                className="w-48"
               >
-                <SwitchControl><SwitchThumb /></SwitchControl>
-              </Switch>
+                <SelectTrigger>
+                  <SelectValue />
+                  <SelectIndicator />
+                </SelectTrigger>
+                <SelectPopover>
+                  <ListBox items={PROCESSING_MODES}>
+                    {x => <ListBoxItem id={x.id} textValue={x.name}>{x.name}<ListBoxItemIndicator /></ListBoxItem>}
+                  </ListBox>
+                </SelectPopover>
+              </Select>
             }
           />
 

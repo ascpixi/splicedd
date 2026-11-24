@@ -67,6 +67,22 @@ export async function writeSampleFile(baseDir: string, relativePath: string, dat
 }
 
 /**
+ * Restores the original sample out of a MP3 preview. Rejects if the preview isn't in a format that can be restored.
+ * @returns A WAV file.
+ */
+// /src-tauri/src/restore/mod.rs
+export async function restoreSample(mp3: Uint8Array, durationMs: number, loopBpm: number | null) {
+  // Just like in `writeSampleFile`, the MP3 makes up the entire body of the request.
+  const wav = await invoke<ArrayBuffer>(
+    "restore_sample", mp3,
+    { bytes: mp3.byteLength, durationMs, loopBpm },
+    { headers: { "sample": JSON.stringify({ durationMs, loopBpm }) } }
+  );
+
+  return new Uint8Array(wav);
+}
+
+/**
  * Checks if a file exists (and isn't empty) on the path retriveved by combining `baseDir` and `relativePath`.
  */
 // /src-tauri/src/files.rs

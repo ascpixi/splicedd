@@ -1,3 +1,5 @@
+import { IS_MACOS } from "../native";
+
 /**
  * Decodes a "scrambled" Splice MP3 sample.
  * @returns The unscrambled sample, also in the MP3 format.
@@ -26,12 +28,13 @@ export function decodeSpliceAudio(data: Uint8Array) {
 }
 
 /**
- * The number of samples of silence/pre-ringing at the start of a decoded Splice
- * MP3 preview, at the MP3's own sample rate. This is LAME's encoder delay (576)
- * plus the standard MP3 decoder delay (529). Splice's previews don't carry a
- * LAME/Xing gapless header, so decoders don't strip this on their own.
+ * The number of samples of silence/pre-ringing at the start of a Splice MP3 preview
+ * decoded by the webview, at the MP3's own sample rate. This is LAME's encoder delay
+ * (576) plus the standard MP3 decoder delay (529) - except for macOS, where the
+ * system's decoder strips the latter on its own. Splice's previews don't carry a
+ * LAME/Xing gapless header, so the encoder delay is never stripped.
  */
-export const MP3_START_DELAY = 576 + 529;
+export const MP3_START_DELAY = IS_MACOS ? 576 : 576 + 529;
 
 /**
  * Finds the sample rate of an MP3 file by reading the header of its first frame.
