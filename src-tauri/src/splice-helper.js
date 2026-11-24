@@ -91,12 +91,8 @@
     event.listen("splice-search", async ({ payload: { id, body } }) => {
       if (typeof id !== "string" || typeof body !== "string") return;
       const duplicate = pending.has(id) || completed.has(id);
-      log(
-        duplicate ? "warn" : "debug",
-        `[${id}] received ${duplicate ? "duplicate " : ""}request (${body.length} chars)`
-      );
-      // Acknowledge even duplicates, so a lost acknowledgement can be retried.
-      emit("splice-search-accepted", { id });
+      log("debug", `[${id}] received ${duplicate ? "duplicate " : ""}request (${body.length} chars)`);
+      // The frontend sends requests repeatedly until it gets a result.
       if (completed.has(id)) {
         emit("splice-result", completed.get(id));
         return;

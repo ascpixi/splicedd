@@ -4,8 +4,6 @@ import { mockSearch } from "../dev/mock";
 import { createLogger } from "../log";
 import { createSearchTransport } from "./search-transport";
 
-// The helper acknowledges delivery before starting the request, so a slow
-// search cannot cause the frontend to launch overlapping retries.
 const nativeSearch = createSearchTransport({ emit, listen }, createLogger("search"));
 
 /**

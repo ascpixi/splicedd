@@ -19,7 +19,7 @@ function bridge() {
   };
 }
 
-test("delivery retries stop on acknowledgement while waiting for a slow search", async t => {
+test("requests are sent repeatedly until there's a result", async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   const b = bridge();
   const result = createSearchTransport(b.events)("search body");
@@ -29,14 +29,15 @@ test("delivery retries stop on acknowledgement while waiting for a slow search",
   t.mock.timers.tick(1500);
   assert.equal(b.sent.length, 2);
   assert.deepEqual(b.sent[0], b.sent[1]);
-  b.receive("splice-search-accepted", { id });
   t.mock.timers.tick(9000);
-  assert.equal(b.sent.length, 2);
+  assert.equal(b.sent.length, 8);
   b.receive("splice-result", { id: "another-search", ok: true, body: "wrong" });
-  assert.equal(b.listeners.size, 2);
+  assert.equal(b.listeners.size, 1);
   b.receive("splice-result", { id, ok: true, body: "matching result" });
   assert.equal(await result, "matching result");
   assert.equal(b.listeners.size, 0);
+  t.mock.timers.tick(9000);
+  assert.equal(b.sent.length, 8);
 });
 
 test("helper errors reject the search and unsubscribe", async () => {

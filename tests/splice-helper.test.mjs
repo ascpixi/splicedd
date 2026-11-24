@@ -59,7 +59,7 @@ test("searches the API from its own origin through Tauri's internal event bridge
     return response();
   }, { internals: true });
   await h.send("request", '{"query":"kick"}');
-  assert.equal(h.emitted[0].name, "splice-search-accepted");
+  assert.equal(h.emitted.at(-1).name, "splice-result");
   assert.equal(h.emitted.at(-1).payload.ok, true);
   assert.equal(h.timerCount(), 0);
   h.replayInit();
@@ -77,7 +77,6 @@ test("duplicate deliveries share one fetch and completed responses can be replay
   await first;
   await h.send("same-id");
   assert.equal(calls, 1);
-  assert.equal(h.emitted.filter(x => x.name === "splice-search-accepted").length, 3);
   assert.equal(h.emitted.filter(x => x.name === "splice-result").length, 2);
 });
 

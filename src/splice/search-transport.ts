@@ -15,7 +15,11 @@ interface SearchResult {
   error?: string;
 }
 
-/** Retry delivery until the helper acknowledges it, never the search itself. */
+/**
+ * Sends searches to the helper. Requests are sent repeatedly until there's a result, as
+ * the helper might still be loading, or might reload while searching. It ignores requests
+ * it's already handling, so this never causes overlapping searches.
+ */
 export function createSearchTransport(events: SearchEvents, log?: SearchLogger) {
   return (body: string): Promise<string> => {
     const id = crypto.randomUUID();
@@ -50,29 +54,22 @@ export function createSearchTransport(events: SearchEvents, log?: SearchLogger) 
         if (!settled) events.emit("splice-search", { id, body }).catch(fail);
       };
 
-      Promise.all([
-        register<{ id: string }>("splice-search-accepted", ({ payload }) => {
-          if (payload.id !== id) return;
-          log?.debug("request accepted", { id, elapsedMs: elapsedMs() });
-          clearInterval(retry);
-        }),
-        register<SearchResult>("splice-result", ({ payload }) => {
-          if (payload.id !== id || settled) return;
-          log?.debug("got response", {
-            id, ok: payload.ok, chars: payload.body?.length, error: payload.error, elapsedMs: elapsedMs()
-          });
-          if (!payload.ok || payload.body == null) {
-            fail(new Error(payload.error ?? "Splice search failed"));
-            return;
-          }
-          settled = true;
-          cleanup();
-          resolve(payload.body);
-        })
-      ]).then(() => {
+      register<SearchResult>("splice-result", ({ payload }) => {
+        if (payload.id !== id || settled) return;
+        log?.debug("got response", {
+          id, ok: payload.ok, chars: payload.body?.length, error: payload.error, elapsedMs: elapsedMs()
+        });
+        if (!payload.ok || payload.body == null) {
+          fail(new Error(payload.error ?? "Splice search failed"));
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(payload.body);
+      }).then(() => {
         if (settled) return;
         retry = setInterval(() => {
-          log?.debug("not accepted yet, sending the request again", { id, elapsedMs: elapsedMs() });
+          log?.debug("no response yet, sending the request again", { id, elapsedMs: elapsedMs() });
           send();
         }, 1500);
         log?.debug("sending request", { id, chars: body.length, elapsedMs: elapsedMs() });
