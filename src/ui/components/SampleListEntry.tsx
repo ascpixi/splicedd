@@ -30,23 +30,41 @@ function findOnset(channel: Float32Array, sampleRate: number) {
   return { peak, onset: head.findIndex(x => Math.abs(x) >= peak * 0.1) };
 }
 
-type MouseReleaseTracker = ReturnType<typeof trackMouseRelease>;
+/** How far the mouse has to be moved for a click to be considered an attempt to drag, in pixels. */
+const DRAG_THRESHOLD = 4;
 
-/** Tracks whether the mouse button has been released since the creation of the tracker. */
-function trackMouseRelease() {
+type MouseTracker = ReturnType<typeof trackMouse>;
+
+/** Tracks what has been done with the mouse since the button was pressed at the given position. */
+function trackMouse(startX: number, startY: number) {
   const startedAt = performance.now();
   let releasedAt: number | null = null;
+  let moved = false;
 
-  const handler = () => {
+  const handleUp = () => {
     releasedAt ??= performance.now();
   };
-  window.addEventListener("mouseup", handler, { capture: true });
+
+  const handleMove = (ev: MouseEvent) => {
+    if (releasedAt == null && Math.hypot(ev.clientX - startX, ev.clientY - startY) >= DRAG_THRESHOLD) {
+      moved = true;
+    }
+  };
+
+  window.addEventListener("mouseup", handleUp, { capture: true });
+  window.addEventListener("mousemove", handleMove, { capture: true });
 
   return {
-    stop: () => window.removeEventListener("mouseup", handler, { capture: true }),
+    stop: () => {
+      window.removeEventListener("mouseup", handleUp, { capture: true });
+      window.removeEventListener("mousemove", handleMove, { capture: true });
+    },
 
     /** How long the button was held for, in milliseconds, or `null` if it's still held down. */
-    heldFor: () => releasedAt == null ? null : Math.round(releasedAt - startedAt)
+    heldFor: () => releasedAt == null ? null : Math.round(releasedAt - startedAt),
+
+    /** Whether the mouse was moved while the button was held down. */
+    moved: () => moved
   };
 }
 
@@ -320,11 +338,16 @@ export default function SampleListEntry(
 
     // Preparing a sample takes a while, and the OS only lets us start a drag if
     // the mouse button is still held down by the time we're done.
-    const mouse = trackMouseRelease();
+    const mouse = trackMouse(ev.clientX, ev.clientY);
     const attempt = ++dragAttempt.current;
 
     try {
-      await prepareAndDrag(span, mouse);
+      const started = await prepareAndDrag(span, mouse);
+
+      // Don't bother the user if they've merely clicked, or if they're already trying again.
+      if (started === false && mouse.moved() && attempt == dragAttempt.current) {
+        toast.success("Sample ready", { description: "It has finished downloading. Drag it again to use it." });
+      }
     }
     catch (err) {
       span.fail(err, { mouseHeldForMs: mouse.heldFor() });
@@ -343,16 +366,22 @@ export default function SampleListEntry(
     }
   }
 
-  /** Hands the drag of the given file over to the OS. */
-  function beginDrag(path: string, span: LogSpan, mouse: MouseReleaseTracker) {
+  /**
+   * Hands the drag of the given file over to the OS, unless the mouse has already been released -
+   * the file would be immediately dropped onto whatever happens to be under the cursor.
+   * @returns Whether the drag was started.
+   */
+  function beginDrag(path: string, span: LogSpan, mouse: MouseTracker) {
     const startedAt = performance.now();
     const elapsedMs = () => performance.now() - startedAt;
 
     const heldFor = mouse.heldFor();
-    span.step("requested OS drag", { path, mouseHeldForMs: heldFor });
     if (heldFor != null) {
       span.log("warn", "the mouse was released before the drag could start", { mouseHeldForMs: heldFor });
+      return false;
     }
+
+    span.step("requested OS drag", { path });
 
     startDrag({ item: [path], icon: DRAG_PREVIEW_ICON }, ev => span.log("info", "OS drag finished", {
       result: ev.result, cursorPos: ev.cursorPos, elapsedMs: elapsedMs()
@@ -360,15 +389,21 @@ export default function SampleListEntry(
       () => span.log("debug", "startDrag returned", { elapsedMs: elapsedMs() }),
       err => span.log("error", "OS drag failed", { err, elapsedMs: elapsedMs() })
     );
+
+    return true;
   }
 
-  async function prepareAndDrag(span: LogSpan, mouse: MouseReleaseTracker) {
+  /**
+   * Makes sure that the sample is present in the sample folder, and drags it.
+   * @returns Whether the drag was started, or `null` if the sample can't be dragged at all.
+   */
+  async function prepareAndDrag(span: LogSpan, mouse: MouseTracker) {
     if (!await checkDirExists(cfg().sampleDir)) {
       span.end("sample folder not found", { sampleDir: cfg().sampleDir }, "warn");
       toast.danger("Sample folder not found", {
         description: "Choose an existing sample folder in the settings to drag samples into your DAW."
       });
-      return;
+      return null;
     }
 
     // Windows' shell can't drag files whose path is longer than MAX_PATH - the
@@ -396,7 +431,7 @@ export default function SampleListEntry(
       toast.danger("Can't drag this sample", {
         description: "The path to your sample folder is too long for Windows. Choose a shorter one in the settings."
       });
-      return;
+      return null;
     }
 
     span.step("resolved path", { fullPath });
@@ -404,18 +439,17 @@ export default function SampleListEntry(
     // A file that's still being written to exists, but isn't complete.
     if (pendingExport.current == null && await checkFileExists(cfg().sampleDir, samplePath)) {
       span.step("found existing file");
-      beginDrag(fullPath, span, mouse);
-      return;
+      return beginDrag(fullPath, span, mouse);
     }
 
     setDragPending(true);
     await ensureAudioDecoded(span);
 
-    const { placeholders } = cfg();
-    if (placeholders) {
+    let started = false;
+    if (cfg().placeholders && mouse.heldFor() == null) {
       await createPlaceholder(cfg().sampleDir, samplePath);
       span.step("created placeholder");
-      beginDrag(fullPath, span, mouse);
+      started = beginDrag(fullPath, span, mouse);
     }
 
     pendingExport.current ??= exportSample(cfg().sampleDir, samplePath, span)
@@ -423,9 +457,7 @@ export default function SampleListEntry(
 
     await pendingExport.current;
 
-    if (!placeholders) {
-      beginDrag(fullPath, span, mouse);
-    }
+    return started || beginDrag(fullPath, span, mouse);
   }
 
   /** Converts the (already downloaded) sample to a WAV file. */
