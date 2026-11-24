@@ -1,7 +1,11 @@
+use std::borrow::Cow;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+use serde::Deserialize;
+use tauri::ipc::{InvokeBody, Request};
 
 use crate::logging::ms;
 
@@ -23,8 +27,43 @@ fn create_parent_dirs(full_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The header that describes where to write the body of a `write_sample_file` request to.
+const SAMPLE_FILE_HEADER: &str = "sample-file";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SampleFile {
+    base_dir: String,
+    relative_path: String,
+}
+
+fn parse_sample_file(request: &Request) -> Result<SampleFile, String> {
+    let header = request.headers().get(SAMPLE_FILE_HEADER)
+        .ok_or_else(|| format!("Missing the {SAMPLE_FILE_HEADER} header"))?;
+
+    serde_json::from_slice(header.as_bytes())
+        .map_err(|e| format!("Malformed {SAMPLE_FILE_HEADER} header: {e}"))
+}
+
+/// Writes the body of the request to a file. Samples can be really big, so they're sent over
+/// as raw bytes, as opposed to a JSON array of numbers.
 #[tauri::command]
-pub async fn write_sample_file(base_dir: String, relative_path: String, buffer: Vec<u8>) -> Result<(), String> {
+pub async fn write_sample_file(request: Request<'_>) -> Result<(), String> {
+    let SampleFile { base_dir, relative_path } = match parse_sample_file(&request) {
+        Ok(file) => file,
+        Err(e) => return fail(e),
+    };
+
+    let buffer: Cow<[u8]> = match request.body() {
+        InvokeBody::Raw(bytes) => Cow::Borrowed(bytes),
+
+        // When the webview can't use the custom IPC protocol, everything ends up being JSON.
+        InvokeBody::Json(value) => match Vec::<u8>::deserialize(value) {
+            Ok(bytes) => Cow::Owned(bytes),
+            Err(e) => return fail(format!("Malformed sample data: {e}")),
+        },
+    };
+
     // By the time we get here, the (potentially huge) buffer has already been sent over
     // and deserialized. Comparing the time of this message to the one logged by the
     // frontend just before invoking the command tells how long that took.

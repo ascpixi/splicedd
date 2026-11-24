@@ -1,4 +1,4 @@
-import { InvokeArgs, invoke as rawInvoke } from '@tauri-apps/api/core';
+import { InvokeArgs, InvokeOptions, invoke as rawInvoke } from '@tauri-apps/api/core';
 import { createLogger, LogFields } from './log';
 
 const log = createLogger("native");
@@ -22,12 +22,12 @@ export const WINDOWS_MAX_PATH = 259;
 /**
  * Invokes a command, logging how long it took. As arguments can be huge, only the given `fields` are logged.
  */
-export async function invoke<T>(command: string, args?: InvokeArgs, fields?: LogFields): Promise<T> {
+export async function invoke<T>(command: string, args?: InvokeArgs, fields?: LogFields, options?: InvokeOptions): Promise<T> {
   const startedAt = performance.now();
   log.trace(`invoking ${command}`, fields);
 
   try {
-    const result = await rawInvoke<T>(command, args);
+    const result = await rawInvoke<T>(command, args, options);
     log.trace(`${command} returned`, { elapsedMs: performance.now() - startedAt });
     return result;
   }
@@ -42,22 +42,24 @@ export async function invoke<T>(command: string, args?: InvokeArgs, fields?: Log
  * The path is required to end with ".wav".
  */
 // /src-tauri/src/files.rs
-export async function writeSampleFile(baseDir: string, relativePath: string, buffer: Buffer) {
+export async function writeSampleFile(baseDir: string, relativePath: string, data: Uint8Array) {
   const startedAt = performance.now();
-  const bytes = Array.from(buffer);
-  const convertedAt = performance.now();
+
+  // The data makes up the entire body of the request, so that it's sent over as-is - which leaves
+  // only the headers for everything else. These can't contain any non-ASCII characters.
+  const file = JSON.stringify({ baseDir, relativePath })
+    .replace(/[\u007f-\uffff]/g, x => "\\u" + x.charCodeAt(0).toString(16).padStart(4, "0"));
 
   await invoke(
-    "write_sample_file",
-    { baseDir, relativePath, buffer: bytes },
-    { relativePath, bytes: bytes.length }
+    "write_sample_file", data,
+    { relativePath, bytes: data.byteLength },
+    { headers: { "sample-file": file } }
   );
 
   // The backend logs how long the write itself took, so what remains is the IPC overhead.
   log.debug("write_sample_file timing", {
-    bytes: bytes.length,
-    convertMs: convertedAt - startedAt,
-    invokeMs: performance.now() - convertedAt
+    bytes: data.byteLength,
+    invokeMs: performance.now() - startedAt
   });
 }
 

@@ -389,33 +389,26 @@ export default function SampleListEntry(
 
         const channels: Float32Array[] = [];
 
-        if (samples.length < 60 * samples.sampleRate) {
-          for (let i = 0; i < samples.numberOfChannels; i++) {
-            const chan = samples.getChannelData(i);
+        for (let i = 0; i < samples.numberOfChannels; i++) {
+          const chan = samples.getChannelData(i);
 
-            const start = cfg().trimDelay ? MP3_START_DELAY : 0;
-            const end = cfg().trimDelay
-              ? Math.round((sample.duration / 1000) * samples.sampleRate) + start
-              : chan.length;
+          const start = cfg().trimDelay ? MP3_START_DELAY : 0;
+          const end = cfg().trimDelay
+            ? Math.round((sample.duration / 1000) * samples.sampleRate) + start
+            : chan.length;
 
-            channels.push(chan.subarray(start, end));
+          // This is merely a view, so it's cheap even for really long samples.
+          channels.push(chan.subarray(start, end));
 
-            span.log("debug", "trimmed channel", {
-              channel: i, start, end, available: chan.length, resultLength: channels[i].length
-            });
-
-            if (end > chan.length) {
-              span.log("warn", "the decoded audio is shorter than expected", {
-                channel: i, missingSamples: end - chan.length
-              });
-            }
-          }
-        }
-        else {
-          // processing big samples may result in memory allocation errors (it sure did for me!!)
-          span.log("warn", "big boi detected - not pre-processing!", {
-            length: samples.length, seconds: samples.duration
+          span.log("debug", "trimmed channel", {
+            channel: i, start, end, available: chan.length, resultLength: channels[i].length
           });
+
+          if (end > chan.length) {
+            span.log("warn", "the decoded audio is shorter than expected", {
+              channel: i, missingSamples: end - chan.length
+            });
+          }
         }
 
         const encoded = wav.encode(channels as unknown as ArrayBuffer[], {
