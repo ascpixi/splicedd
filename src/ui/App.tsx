@@ -14,7 +14,7 @@ import UpdateModal from "./components/UpdateModal";
 import { UpdateInfo, checkForUpdates } from "../updater";
 import KeyScaleSelection from "./components/KeyScaleSelection";
 import BpmSelection, { BpmFilter, BpmFilterType } from "./components/BpmSelection";
-import { SamplePlaybackCancellation, SamplePlaybackContext } from "./playback";
+import { PlaybackController } from "./playback";
 import { IN_TAURI, checkDirExists } from "../native";
 import { mockSearch } from "../dev/mock";
 import { createLogger } from "../log";
@@ -179,19 +179,15 @@ function App() {
     musicKey, chordType, packFilter
   ]);
 
-  const [smplCancellation, smplSetCancellation] = useState<SamplePlaybackCancellation | null>(null);
-  const pbCtx: SamplePlaybackContext = {
-    cancellation: smplCancellation,
-    setCancellation: smplSetCancellation
-  }
+  const [playback] = useState(() => new PlaybackController());
 
   // Stop any playing sample when the window loses focus (e.g. the user tabs
   // away or drags a sample into their DAW).
   useEffect(() => {
-    const stopOnBlur = () => smplCancellation?.();
+    const stopOnBlur = () => playback.stop();
     window.addEventListener("blur", stopOnBlur);
     return () => window.removeEventListener("blur", stopOnBlur);
-  }, [smplCancellation]);
+  }, [playback]);
 
   function ensureContraintsGathered() {
     if (knownInstruments.length == 0 || knownGenres.length == 0) {
@@ -312,7 +308,7 @@ function App() {
         });
       }
 
-      pbCtx.cancellation?.(); // stop any sample that's currently playing
+      playback.stop(); // stop any sample that's currently playing
 
       let data: SpliceSearchResponse["data"]["assetsSearch"];
       try {
@@ -643,7 +639,7 @@ function App() {
                               ${searchLoading ? "opacity-50 pointer-events-none" : ""}`}
               >
               { results.map(
-                x => <SampleListEntry key={x.uuid} sample={x} onTagClick={handleTagClick} onPackClick={handlePackClick} ctx={pbCtx}/>
+                x => <SampleListEntry key={x.uuid} sample={x} onTagClick={handleTagClick} onPackClick={handlePackClick} playback={playback}/>
               ) }
               </div>
 

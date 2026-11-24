@@ -11,7 +11,7 @@ import { join } from "@tauri-apps/api/path";
 
 import { cfg } from "../../config";
 import { DRAG_PREVIEW_ICON } from "../../dragIcon";
-import { SamplePlaybackContext } from "../playback";
+import { PlaybackClaim, PlaybackController } from "../playback";
 import { SpliceTag } from "../../splice/entities";
 import { SpliceSample, SpliceSamplePack } from "../../splice/api";
 import { decodeSpliceAudio, describeMp3, getMp3SampleRate, MP3_START_DELAY } from "../../splice/decoder";
@@ -60,14 +60,18 @@ export type PackClickHandler = (pack: SpliceSamplePack) => void;
  * Provides a view describing a Splice sample.
  */
 export default function SampleListEntry(
-  { sample, ctx, onTagClick, onPackClick }: {
+  { sample, playback, onTagClick, onPackClick }: {
     sample: SpliceSample,
-    ctx: SamplePlaybackContext,
+    playback: PlaybackController,
     onTagClick: TagClickHandler,
     onPackClick: PackClickHandler
   }
 ) {
-  const [fgLoading, setFgLoading] = useState(false);
+  // Whether we're preparing the sample to be played or dragged, respectively.
+  const [playPending, setPlayPending] = useState(false);
+  const [dragPending, setDragPending] = useState(false);
+  const fgLoading = playPending || dragPending;
+
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
 
@@ -134,10 +138,16 @@ export default function SampleListEntry(
     );
   }
 
+  const playbackClaim = useRef<PlaybackClaim | null>(null);
+
   audio.onended = () => {
+    playbackClaim.current?.release();
     setPlaying(false);
     setProgress(0);
   };
+
+  // The audio element isn't a part of the DOM, so it would outlive us otherwise.
+  useEffect(() => () => playbackClaim.current?.stop(), []);
 
   // While a sample is playing, keep its waveform's progress marker in
   // sync with the audio element.
@@ -157,81 +167,80 @@ export default function SampleListEntry(
     audio.pause();
     audio.currentTime = 0;
     setPlaying(false);
+    setPlayPending(false);
     setProgress(0);
   }
 
-  async function ensurePlayable(span: LogSpan) {
-    if (audio.src != "")
+  async function handlePlayClick() {
+    if (playbackClaim.current?.active) {
+      playbackClaim.current.stop();
       return;
-
-    setFgLoading(true);
-    try {
-      await ensureAudioDecoded(span);
-    }
-    finally {
-      setFgLoading(false);
     }
 
-    audio.src = URL.createObjectURL(
-      new Blob([decodedSample.current!], { "type": "audio/mpeg" })
-    );
+    await play();
   }
 
-  async function handlePlayClick() {
-    ctx.cancellation?.();
+  /** Plays the sample, after downloading it if needed. Stops any other sample. */
+  async function play(seekTo?: number) {
+    const span = log.span("play", { sample: sample.name, durationMs: sample.duration, seekTo });
 
-    if (playing)
-      return;
-
-    const span = log.span("play", { sample: sample.name, durationMs: sample.duration });
+    // Downloading can take a while. The user might stop us or play some other sample by
+    // the time it's done, in which case our claim isn't going to be active anymore.
+    const claim = playbackClaim.current = playback.claim(stop);
 
     try {
-      await ensurePlayable(span);
+      if (audio.src == "") {
+        setPlayPending(true);
+        await ensureAudioDecoded(span);
+
+        if (!claim.active) {
+          span.end("stopped before it could start");
+          return;
+        }
+
+        audio.src = URL.createObjectURL(
+          new Blob([decodedSample.current!], { "type": "audio/mpeg" })
+        );
+      }
+
+      setPlayPending(false);
+      setPlaying(true);
+
+      const started = audio.play();
+      if (seekTo != null) {
+        seek(seekTo);
+      }
+
+      await started;
+      span.step("started playing");
+      span.end();
     }
     catch (err) {
-      span.fail(err);
-      return;
-    }
-
-    startPlayback(span);
-    setPlaying(true);
-
-    ctx.setCancellation(() => stop);
-  }
-
-  function startPlayback(span: LogSpan) {
-    audio.play().then(
-      () => {
-        span.step("started playing");
-        span.end();
-      },
-      err => span.fail(err)
-    );
-  }
-
-  async function handleSeek(target: number) {
-    if (!playing) {
-      ctx.cancellation?.();
-
-      const span = log.span("play", { sample: sample.name, durationMs: sample.duration, seekTo: target });
-
-      try {
-        await ensurePlayable(span);
-      }
-      catch (err) {
-        span.fail(err);
+      if (!claim.active) {
+        span.end("stopped before it could start", { err });
         return;
       }
 
-      startPlayback(span);
-      setPlaying(true);
-      ctx.setCancellation(() => stop);
+      span.fail(err);
+      claim.stop();
+      toast.danger("Couldn't play this sample", { description: "Please try again." });
     }
+  }
 
+  function seek(target: number) {
     // The audio metadata might not be loaded yet right after setting the
     // source, so we compute the seek time from the sample's known duration.
     audio.currentTime = target * (sample.duration / 1000);
     setProgress(target);
+  }
+
+  async function handleSeek(target: number) {
+    if (playing) {
+      seek(target);
+    }
+    else {
+      await play(target);
+    }
   }
 
   const download = useRef<Promise<void> | null>(null);
@@ -326,7 +335,7 @@ export default function SampleListEntry(
     }
     finally {
       if (attempt == dragAttempt.current) {
-        setFgLoading(false);
+        setDragPending(false);
       }
 
       span.end("done", { mouseHeldForMs: mouse.heldFor() });
@@ -399,7 +408,7 @@ export default function SampleListEntry(
       return;
     }
 
-    setFgLoading(true);
+    setDragPending(true);
     await ensureAudioDecoded(span);
 
     const { placeholders } = cfg();
@@ -531,7 +540,7 @@ export default function SampleListEntry(
         <button
           type="button"
           onClick={handlePlayClick}
-          aria-label={playing ? "Stop playback" : "Play sample"}
+          aria-label={playing ? "Stop playback" : playPending ? "Cancel playback" : "Play sample"}
           data-draggable="false"
           className={`flex items-center justify-center w-8 h-8 rounded-full shrink-0
                       cursor-pointer transition-colors hover:bg-surface-tertiary
