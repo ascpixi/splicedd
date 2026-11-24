@@ -13,6 +13,9 @@ export const IN_TAURI = "__TAURI_INTERNALS__" in window;
 /** Whether the app is running on Windows. */
 export const IS_WINDOWS = navigator.userAgent.includes("Windows");
 
+/** Whether the app is running on macOS. */
+export const IS_MACOS = navigator.userAgent.includes("Macintosh");
+
 /**
  * The longest path (in UTF-16 code units, excluding the null terminator) that the
  * Windows shell accepts. Dragging files with longer paths isn't possible.

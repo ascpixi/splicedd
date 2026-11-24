@@ -71,7 +71,7 @@ pub async fn write_sample_file(request: Request<'_>) -> Result<(), String> {
 
     let started = Instant::now();
 
-    if !relative_path.ends_with(".wav") {
+    if !relative_path.to_ascii_lowercase().ends_with(".wav") {
         return fail(format!("The relative path must end with .wav (got {relative_path:?})"));
     }
 

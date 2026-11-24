@@ -7,7 +7,8 @@ import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
 import * as wav from "node-wav";
 import { checkDirExists, checkFileExists, createPlaceholder, IS_WINDOWS, removePlaceholder, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
-import { join } from "@tauri-apps/api/path";
+import { basename, dirname, join } from "@tauri-apps/api/path";
+import { save } from "@tauri-apps/plugin-dialog";
 
 import { cfg } from "../../config";
 import { readBody } from "../../download";
@@ -17,6 +18,7 @@ import { SpliceTag } from "../../splice/entities";
 import { SpliceSample, SpliceSamplePack } from "../../splice/api";
 import { decodeSpliceAudio, describeMp3, getMp3SampleRate, MP3_START_DELAY } from "../../splice/decoder";
 import { createLogger, isVerbose, LogSpan, shortUrl } from "../../log";
+import SampleContextMenu, { ContextMenuPosition, isContextMenuPress } from "./SampleContextMenu";
 import Waveform from "./Waveform";
 
 const log = createLogger("sample");
@@ -86,10 +88,16 @@ export default function SampleListEntry(
     onPackClick: PackClickHandler
   }
 ) {
-  // Whether we're preparing the sample to be played or dragged, respectively.
+  // Whether we're preparing the sample to be played, dragged, or saved, respectively.
   const [playPending, setPlayPending] = useState(false);
   const [dragPending, setDragPending] = useState(false);
-  const fgLoading = playPending || dragPending;
+  const [savePending, setSavePending] = useState(false);
+  const fgLoading = playPending || dragPending || savePending;
+
+  // Where the context menu was last opened, or `null` if it's yet to be.
+  const [menuPosition, setMenuPosition] = useState<ContextMenuPosition | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const timesMenuOpened = useRef(0);
 
   // How much of the sample has been downloaded (0 to 100), or `null` if that's unknown.
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
@@ -326,6 +334,9 @@ export default function SampleListEntry(
   const pendingExport = useRef<Promise<void> | null>(null);
 
   async function handleDrag(ev: React.MouseEvent<HTMLDivElement, MouseEvent>) {
+    if (ev.button != 0 || isContextMenuPress(ev))
+      return;
+
     // Verify that the parent of the element that we began the dragging from
     // is not explicitly marked as non-draggable (as it may be clicked etc.)
     const dragOrigin = document.elementFromPoint(ev.clientX, ev.clientY)?.parentElement;
@@ -338,7 +349,6 @@ export default function SampleListEntry(
       sample: sample.name,
       uuid: sample.uuid,
       durationMs: sample.duration,
-      button: ev.button,
       alreadyBusy: fgLoading,
       placeholders: cfg().placeholders,
       trimDelay: cfg().trimDelay
@@ -468,70 +478,75 @@ export default function SampleListEntry(
     return started || beginDrag(fullPath, span, mouse);
   }
 
-  /** Converts the (already downloaded) sample to a WAV file. */
+  function handleContextMenu(ev: React.MouseEvent) {
+    ev.preventDefault();
+    timesMenuOpened.current++;
+    setMenuPosition({ x: ev.clientX, y: ev.clientY });
+    setMenuOpen(true);
+  }
+
+  /** Lets the user choose where to save the sample, and saves it there. */
+  async function handleDownload() {
+    const span = log.span("save", {
+      sample: sample.name,
+      uuid: sample.uuid,
+      durationMs: sample.duration,
+      trimDelay: cfg().trimDelay
+    });
+
+    try {
+      let path = await save({
+        title: "Download sample",
+        defaultPath: sanitizePath(sample.name.split("/").pop()!),
+        filters: [{ name: "WAV audio", extensions: ["wav"] }]
+      });
+
+      if (path == null) {
+        span.end("cancelled");
+        return;
+      }
+
+      span.step("chose path", { path });
+
+      // Not every platform's dialog adds the extension if the user leaves it out.
+      const hasExtension = path.toLowerCase().endsWith(".wav");
+      if (!hasExtension) {
+        path += ".wav";
+      }
+
+      const dir = await dirname(path);
+      const fileName = await basename(path);
+
+      // The dialog couldn't have asked about overwriting a file with a different name.
+      if (!hasExtension && await checkFileExists(dir, fileName)) {
+        span.end("file already exists", { path }, "warn");
+        toast.danger("Couldn't download this sample", {
+          description: `${fileName} already exists in that folder. Please choose another name.`
+        });
+        return;
+      }
+
+      setSavePending(true);
+      await ensureAudioDecoded(span);
+      await writeSampleFile(dir, fileName, await encodeSample(span));
+      span.step("wrote file");
+      span.end();
+
+      toast.success("Sample downloaded", { description: `Saved as ${fileName}.` });
+    }
+    catch (err) {
+      span.fail(err);
+      toast.danger("Couldn't download this sample", { description: "Please try again, or choose another folder." });
+    }
+    finally {
+      setSavePending(false);
+    }
+  }
+
+  /** Converts the (already downloaded) sample to a WAV file in the sample folder. */
   async function exportSample(baseDir: string, samplePath: string, span: LogSpan) {
     try {
-      // decodeAudioData resamples to the context's rate, so decode at the MP3's
-      // own rate - this keeps the output unaltered and MP3_START_DELAY exact.
-      const sampleRate = getMp3SampleRate(decodedSample.current!) ?? 44100;
-      const actx = new OfflineAudioContext(1, 1, sampleRate);
-
-      // decodeAudioData detaches the buffer we give it, so pass a copy to
-      // keep the decoded sample usable for playback afterwards.
-      span.log("debug", "decoding", { sampleRate, mp3Bytes: decodedSample.current!.byteLength });
-      const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
-
-      const expectedLength = Math.round((sample.duration / 1000) * samples.sampleRate);
-      span.step("decoded MP3", {
-        length: samples.length,
-        expectedLength,
-        excess: samples.length - expectedLength,
-        channels: samples.numberOfChannels,
-        sampleRate: samples.sampleRate,
-        pcmBytes: samples.length * samples.numberOfChannels * 4
-      });
-
-      if (isVerbose()) {
-        span.log("debug", "onset before trimming", {
-          channels: Array.from(
-            { length: samples.numberOfChannels },
-            (_, i) => findOnset(samples.getChannelData(i), samples.sampleRate)
-          ),
-          mp3StartDelay: MP3_START_DELAY
-        });
-      }
-
-      const channels: Float32Array[] = [];
-
-      for (let i = 0; i < samples.numberOfChannels; i++) {
-        const chan = samples.getChannelData(i);
-
-        const start = cfg().trimDelay ? MP3_START_DELAY : 0;
-        const end = cfg().trimDelay
-          ? Math.round((sample.duration / 1000) * samples.sampleRate) + start
-          : chan.length;
-
-        // This is merely a view, so it's cheap even for really long samples.
-        channels.push(chan.subarray(start, end));
-
-        span.log("debug", "trimmed channel", {
-          channel: i, start, end, available: chan.length, resultLength: channels[i].length
-        });
-
-        if (end > chan.length) {
-          span.log("warn", "the decoded audio is shorter than expected", {
-            channel: i, missingSamples: end - chan.length
-          });
-        }
-      }
-
-      const encoded = wav.encode(channels as unknown as ArrayBuffer[], {
-        bitDepth: 16,
-        sampleRate: samples.sampleRate
-      });
-      span.step("encoded WAV", { bytes: encoded.byteLength, channels: channels.length });
-
-      await writeSampleFile(baseDir, samplePath, encoded);
+      await writeSampleFile(baseDir, samplePath, await encodeSample(span));
       span.step("wrote file");
     }
     catch (err) {
@@ -541,8 +556,82 @@ export default function SampleListEntry(
     }
   }
 
-  return (
-    <div onMouseOver={startFetching}
+  /** Converts the (already downloaded) sample to WAV. */
+  async function encodeSample(span: LogSpan) {
+    // decodeAudioData resamples to the context's rate, so decode at the MP3's
+    // own rate - this keeps the output unaltered and MP3_START_DELAY exact.
+    const sampleRate = getMp3SampleRate(decodedSample.current!) ?? 44100;
+    const actx = new OfflineAudioContext(1, 1, sampleRate);
+
+    // decodeAudioData detaches the buffer we give it, so pass a copy to
+    // keep the decoded sample usable for playback afterwards.
+    span.log("debug", "decoding", { sampleRate, mp3Bytes: decodedSample.current!.byteLength });
+    const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
+
+    const expectedLength = Math.round((sample.duration / 1000) * samples.sampleRate);
+    span.step("decoded MP3", {
+      length: samples.length,
+      expectedLength,
+      excess: samples.length - expectedLength,
+      channels: samples.numberOfChannels,
+      sampleRate: samples.sampleRate,
+      pcmBytes: samples.length * samples.numberOfChannels * 4
+    });
+
+    if (isVerbose()) {
+      span.log("debug", "onset before trimming", {
+        channels: Array.from(
+          { length: samples.numberOfChannels },
+          (_, i) => findOnset(samples.getChannelData(i), samples.sampleRate)
+        ),
+        mp3StartDelay: MP3_START_DELAY
+      });
+    }
+
+    const channels: Float32Array[] = [];
+
+    for (let i = 0; i < samples.numberOfChannels; i++) {
+      const chan = samples.getChannelData(i);
+
+      const start = cfg().trimDelay ? MP3_START_DELAY : 0;
+      const end = cfg().trimDelay
+        ? Math.round((sample.duration / 1000) * samples.sampleRate) + start
+        : chan.length;
+
+      // This is merely a view, so it's cheap even for really long samples.
+      channels.push(chan.subarray(start, end));
+
+      span.log("debug", "trimmed channel", {
+        channel: i, start, end, available: chan.length, resultLength: channels[i].length
+      });
+
+      if (end > chan.length) {
+        span.log("warn", "the decoded audio is shorter than expected", {
+          channel: i, missingSamples: end - chan.length
+        });
+      }
+    }
+
+    const encoded = wav.encode(channels as unknown as ArrayBuffer[], {
+      bitDepth: 16,
+      sampleRate: samples.sampleRate
+    });
+    span.step("encoded WAV", { bytes: encoded.byteLength, channels: channels.length });
+
+    return encoded;
+  }
+
+  return (<>
+    {menuPosition != null &&
+      <SampleContextMenu
+        key={timesMenuOpened.current} // it can't be moved or re-focused while it's still fading out
+        position={menuPosition}
+        isOpen={menuOpen}
+        onOpenChange={setMenuOpen}
+        onDownload={handleDownload}
+      />}
+
+    <div onMouseOver={startFetching} onContextMenu={handleContextMenu}
       className={`group flex w-full px-3 py-2 gap-6 rounded-2xl transition-colors
                     items-center hover:bg-surface-secondary cursor-grab select-none`}
     >
@@ -657,5 +746,5 @@ export default function SampleListEntry(
         </div>
       </div>
     </div>
-  );
+  </>);
 }
