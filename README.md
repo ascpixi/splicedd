@@ -25,19 +25,3 @@ Splicedd keeps logs that help with tracking down problems. To include them in a 
 3. click **View logs** in the settings, then **Open folder**, and attach `splicedd.log`. If you've restarted Splicedd in the meantime (e.g. because it crashed), attach the most recent `splicedd_<date>.log` too.
 
 The logs include your searches, sample names, and folder paths (with your home folder replaced by `~`).
-
-## Development
-
-Install Node.js 22.6 or newer (for the test runner), Rust, Yarn Classic 1.22,
-and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
-platform. On macOS, install the Xcode Command Line Tools.
-
-```sh
-yarn install --frozen-lockfile
-yarn test
-yarn tauri dev
-```
-
-`yarn build` checks TypeScript and builds the frontend. `yarn tauri build` also
-compiles Rust and packages the native app. Search connectivity must be verified
-in the native app; the browser-only development preview uses mock results.
