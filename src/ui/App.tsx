@@ -357,7 +357,7 @@ function App() {
       <Modal isOpen={settings.isOpen} onOpenChange={settings.setOpen}>
         <ModalBackdrop isDismissable={false}>
           <ModalContainer size="lg">
-            <ModalDialog className="max-h-full min-h-0">
+            <ModalDialog className="max-h-full min-h-0 max-w-2xl">
               {cfg().configured && <ModalCloseTrigger />}
               <SettingsModalContent onClose={settings.close} />
             </ModalDialog>
