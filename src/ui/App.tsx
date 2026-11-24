@@ -347,7 +347,7 @@ function App() {
   return (
     <main className="flex flex-col gap-2 h-screen p-6">
       <Modal isOpen={settings.isOpen} onOpenChange={settings.setOpen}>
-        <ModalBackdrop isDismissable={false}>
+        <ModalBackdrop isDismissable={false} isKeyboardDismissDisabled={!cfg().configured}>
           <ModalContainer size="lg">
             <ModalDialog className="max-h-full min-h-0 max-w-2xl">
               {cfg().configured && <ModalCloseTrigger />}
