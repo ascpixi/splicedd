@@ -3,10 +3,16 @@
 
 mod files;
 mod logging;
+#[cfg(target_os = "macos")]
+mod macos;
 mod updater;
 
 use tauri::webview::PageLoadEvent;
 use tauri::{Listener, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+
+// The label Tauri gives to the window defined in `tauri.conf.json`.
+#[cfg(target_os = "macos")]
+const MAIN_LABEL: &str = "main";
 
 // Splice's GraphQL endpoint sits behind Cloudflare Bot Management, which rejects
 // any client whose TLS/HTTP2 fingerprint isn't a real browser (Tauri's built-in
@@ -166,6 +172,12 @@ fn main() {
         })
         .on_window_event(|window, event| match event {
             WindowEvent::Focused(focused) => log::debug!("[{}] focused: {focused}", window.label()),
+            #[cfg(target_os = "macos")]
+            WindowEvent::CloseRequested { api, .. } if window.label() == MAIN_LABEL => {
+                log::info!("[{}] close requested, hiding", window.label());
+                api.prevent_close();
+                macos::hide_main_window(window);
+            }
             WindowEvent::CloseRequested { .. } => log::info!("[{}] close requested", window.label()),
             WindowEvent::Destroyed => log::info!("[{}] destroyed", window.label()),
             _ => {}
@@ -208,10 +220,18 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_, event| {
-            if let RunEvent::Exit = event {
+        .run(|_app, event| match event {
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { has_visible_windows, .. } => {
+                log::info!("reopened (has visible windows: {has_visible_windows})");
+                if !has_visible_windows {
+                    macos::show_main_window(_app);
+                }
+            }
+            RunEvent::Exit => {
                 log::info!("exiting");
                 log::logger().flush();
             }
+            _ => {}
         });
 }
