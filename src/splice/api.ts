@@ -24,6 +24,13 @@ export function createSearchRequest(query: string): SpliceSearchRequest {
 }
 
 /**
+ * Creates a seed for searches sorted by `"random"`. Splice rejects ones that aren't 10 digits long.
+ */
+export function createRandomSeed() {
+  return Math.floor(1_000_000_000 + Math.random() * 9_000_000_000).toString();
+}
+
+/**
  * Represents any GraphQL request to Splice.
  */
 export interface SpliceRequest<T> {

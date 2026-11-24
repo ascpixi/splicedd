@@ -5,7 +5,7 @@ import { InputGroup, InputGroupInput, InputGroupPrefix, InputGroupSuffix, Modal,
 import { ArrowUpDown, ChevronDown, Disc3, EllipsisVertical, Guitar, Layers, Metronome, MoveRight, Music2, Repeat, Search, Wrench, X } from "lucide-react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cfg } from "../config";
-import { SpliceSample, SpliceSamplePack, SpliceSearchResponse, createSearchRequest } from "../splice/api";
+import { SpliceSample, SpliceSamplePack, SpliceSearchResponse, createRandomSeed, createSearchRequest } from "../splice/api";
 import { ChordType, MusicKey, SpliceSampleType, SpliceSortBy, SpliceTag } from "../splice/entities";
 
 import SampleListEntry from "./components/SampleListEntry";
@@ -248,7 +248,7 @@ function App() {
       const payload = createSearchRequest(newQuery);
       payload.variables.sort = sortBy;
       if (sortBy == "random") {
-        payload.variables.random_seed = Math.floor(Math.random() * 10000000000).toString();
+        payload.variables.random_seed = createRandomSeed();
       }
 
       payload.variables.tags = tags.map(x => x.uuid);
