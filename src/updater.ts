@@ -1,8 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-shell";
 import { cfg, mutateCfg } from "./config";
-import { IN_TAURI } from "./native";
+import { IN_TAURI, invoke } from "./native";
+import { createLogger } from "./log";
+
+const log = createLogger("updater");
 
 /**
  * The release notes for a single version, shown in the update dialog's changelog.
@@ -108,8 +110,10 @@ function pickInstaller(assets: GithubReleaseAsset[]) {
  */
 // /src-tauri/src/updater.rs
 export async function checkForUpdates(): Promise<UpdateInfo | null> {
-  if (!IN_TAURI || !cfg().checkUpdates)
+  if (!IN_TAURI || !cfg().checkUpdates) {
+    log.debug("update check skipped", { enabled: cfg().checkUpdates });
     return null;
+  }
 
   const releases = await invoke<GithubRelease[]>("fetch_releases");
 
@@ -122,10 +126,14 @@ export async function checkForUpdates(): Promise<UpdateInfo | null> {
   if (latest == null)
     return null;
 
-  if (latest.tag_name == cfg().skippedUpdateVersion)
+  if (latest.tag_name == cfg().skippedUpdateVersion) {
+    log.info("the latest version was skipped by the user", { latest: latest.tag_name });
     return null;
+  }
 
   const currentVersion = await getVersion();
+  log.info("checked for updates", { currentVersion, latest: latest.tag_name, releases: releases.length });
+
   if (!isNewer(latest.tag_name, currentVersion))
     return null;
 
@@ -172,6 +180,8 @@ export function opensReleasePage(update: UpdateInfo) {
 // /src-tauri/src/updater.rs
 export async function installUpdate(update: UpdateInfo) {
   const url = update.installerUrl;
+  log.info("installing update", { version: update.version, url, opensReleasePage: opensReleasePage(update) });
+
   if (url == null || !isWindows()) {
     await open(update.releaseUrl);
     return;

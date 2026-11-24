@@ -14,8 +14,41 @@ import { DRAG_PREVIEW_ICON } from "../../dragIcon";
 import { SamplePlaybackContext } from "../playback";
 import { SpliceTag } from "../../splice/entities";
 import { SpliceSample, SpliceSamplePack } from "../../splice/api";
-import { decodeSpliceAudio, getMp3SampleRate, MP3_START_DELAY } from "../../splice/decoder";
+import { decodeSpliceAudio, describeMp3, getMp3SampleRate, MP3_START_DELAY } from "../../splice/decoder";
+import { createLogger, isVerbose, LogSpan, shortUrl } from "../../log";
 import Waveform from "./Waveform";
+
+const log = createLogger("sample");
+
+/**
+ * Finds the index of the sample at which the first loud-enough sound of a channel begins,
+ * relative to the peak of its first second. MP3 pre-ringing is quieter than that.
+ */
+function findOnset(channel: Float32Array, sampleRate: number) {
+  const head = channel.subarray(0, sampleRate);
+  const peak = head.reduce((max, x) => Math.max(max, Math.abs(x)), 0);
+  return { peak, onset: head.findIndex(x => Math.abs(x) >= peak * 0.1) };
+}
+
+type MouseReleaseTracker = ReturnType<typeof trackMouseRelease>;
+
+/** Tracks whether the mouse button has been released since the creation of the tracker. */
+function trackMouseRelease() {
+  const startedAt = performance.now();
+  let releasedAt: number | null = null;
+
+  const handler = () => {
+    releasedAt ??= performance.now();
+  };
+  window.addEventListener("mouseup", handler, { capture: true });
+
+  return {
+    stop: () => window.removeEventListener("mouseup", handler, { capture: true }),
+
+    /** How long the button was held for, in milliseconds, or `null` if it's still held down. */
+    heldFor: () => releasedAt == null ? null : Math.round(releasedAt - startedAt)
+  };
+}
 
 const getChordTypeDisplay = (type: string | null) =>
   type == null ? "" : type == "major" ? " Major" : " Minor";
@@ -40,7 +73,28 @@ export default function SampleListEntry(
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   if (audioRef.current == null) {
-    audioRef.current = document.createElement("audio");
+    const element = audioRef.current = document.createElement("audio");
+
+    for (const name of ["loadstart", "loadedmetadata", "canplay", "playing", "waiting", "stalled", "seeking", "seeked", "pause", "ended"]) {
+      element.addEventListener(name, () => log.trace(`audio event: ${name}`, {
+        sample: sample.name,
+        currentTime: element.currentTime,
+        duration: element.duration,
+        readyState: element.readyState
+      }));
+    }
+
+    element.addEventListener("loadedmetadata", () => log.debug("preview metadata loaded", {
+      sample: sample.name,
+      actualMs: element.duration * 1000,
+      expectedMs: sample.duration
+    }));
+
+    element.addEventListener("error", () => log.error("audio element failed", {
+      sample: sample.name,
+      code: element.error?.code,
+      message: element.error?.message
+    }));
   }
 
   const audio = audioRef.current;
@@ -61,7 +115,20 @@ export default function SampleListEntry(
 
     const file = sample.files.find(x => x.asset_file_type_slug == "preview_mp3")!;
 
+    const span = log.span("fetch", { sample: sample.name, url: shortUrl(file.url) });
+
     fetchAhead.current = fetch(file.url);
+
+    // This only observes the request - errors still reach whoever awaits `fetchAhead`.
+    fetchAhead.current.then(
+      resp => span.end("got headers", {
+        status: resp.status,
+        contentLength: resp.headers.get("content-length"),
+        contentType: resp.headers.get("content-type"),
+        contentEncoding: resp.headers.get("content-encoding")
+      }, resp.ok ? "debug" : "error"),
+      err => span.fail(err)
+    );
   }
 
   audio.onended = () => {
@@ -90,14 +157,15 @@ export default function SampleListEntry(
     setProgress(0);
   }
 
-  async function ensurePlayable() {
+  async function ensurePlayable(span: LogSpan) {
     if (audio.src != "")
       return;
 
     setFgLoading(true);
     try {
-      await ensureAudioDecoded();
-    } finally {
+      await ensureAudioDecoded(span);
+    }
+    finally {
       setFgLoading(false);
     }
 
@@ -112,31 +180,47 @@ export default function SampleListEntry(
     if (playing)
       return;
 
+    const span = log.span("play", { sample: sample.name, durationMs: sample.duration });
+
     try {
-      await ensurePlayable();
-    } catch (err) {
-      console.error("failed to load sample preview:", err);
+      await ensurePlayable(span);
+    }
+    catch (err) {
+      span.fail(err);
       return;
     }
 
-    audio.play();
+    startPlayback(span);
     setPlaying(true);
 
     ctx.setCancellation(() => stop);
+  }
+
+  function startPlayback(span: LogSpan) {
+    audio.play().then(
+      () => {
+        span.step("started playing");
+        span.end();
+      },
+      err => span.fail(err)
+    );
   }
 
   async function handleSeek(target: number) {
     if (!playing) {
       ctx.cancellation?.();
 
+      const span = log.span("play", { sample: sample.name, durationMs: sample.duration, seekTo: target });
+
       try {
-        await ensurePlayable();
-      } catch (err) {
-        console.error("failed to load sample preview:", err);
+        await ensurePlayable(span);
+      }
+      catch (err) {
+        span.fail(err);
         return;
       }
 
-      audio.play();
+      startPlayback(span);
       setPlaying(true);
       ctx.setCancellation(() => stop);
     }
@@ -147,17 +231,24 @@ export default function SampleListEntry(
     setProgress(target);
   }
 
-  async function ensureAudioDecoded() {
-    if (decodedSample.current != null)
+  async function ensureAudioDecoded(span: LogSpan) {
+    if (decodedSample.current != null) {
+      span.log("debug", "already downloaded");
       return;
+    }
 
     if (fetchAhead.current == null) {
       startFetching();
     }
 
     const resp = await fetchAhead.current!;
+    span.step("waited for headers", { status: resp.status });
+
     const data = await resp.arrayBuffer();
+    span.step("read body", { bytes: data.byteLength, contentLength: resp.headers.get("content-length") });
+
     decodedSample.current = decodeSpliceAudio(new Uint8Array(data));
+    span.step("unscrambled", { mp3: describeMp3(decodedSample.current) });
   }
 
   const sanitizePath = (x: string) => x.replace(/[<>:"|?* ]/g, "_");
@@ -167,10 +258,58 @@ export default function SampleListEntry(
     // is not explicitly marked as non-draggable (as it may be clicked etc.)
     const dragOrigin = document.elementFromPoint(ev.clientX, ev.clientY)?.parentElement;
     if (dragOrigin != null && dragOrigin.dataset.draggable === "false") {
+      log.trace("ignoring drag from a non-draggable element", { sample: sample.name });
       return;
     }
 
+    const span = log.span("drag", {
+      sample: sample.name,
+      uuid: sample.uuid,
+      durationMs: sample.duration,
+      button: ev.button,
+      alreadyBusy: fgLoading,
+      placeholders: cfg().placeholders,
+      trimDelay: cfg().trimDelay
+    });
+
+    // Preparing a sample takes a while, and the OS only lets us start a drag if
+    // the mouse button is still held down by the time we're done.
+    const mouse = trackMouseRelease();
+
+    try {
+      await prepareAndDrag(span, mouse);
+    }
+    catch (err) {
+      span.fail(err, { mouseHeldForMs: mouse.heldFor() });
+    }
+    finally {
+      span.end("done", { mouseHeldForMs: mouse.heldFor() });
+      mouse.stop();
+    }
+  }
+
+  /** Hands the drag of the given file over to the OS. */
+  function beginDrag(path: string, span: LogSpan, mouse: MouseReleaseTracker) {
+    const startedAt = performance.now();
+    const elapsedMs = () => performance.now() - startedAt;
+
+    const heldFor = mouse.heldFor();
+    span.step("requested OS drag", { path, mouseHeldForMs: heldFor });
+    if (heldFor != null) {
+      span.log("warn", "the mouse was released before the drag could start", { mouseHeldForMs: heldFor });
+    }
+
+    startDrag({ item: [path], icon: DRAG_PREVIEW_ICON }, ev => span.log("info", "OS drag finished", {
+      result: ev.result, cursorPos: ev.cursorPos, elapsedMs: elapsedMs()
+    })).then(
+      () => span.log("debug", "startDrag returned", { elapsedMs: elapsedMs() }),
+      err => span.log("error", "OS drag failed", { err, elapsedMs: elapsedMs() })
+    );
+  }
+
+  async function prepareAndDrag(span: LogSpan, mouse: MouseReleaseTracker) {
     if (!await checkDirExists(cfg().sampleDir)) {
+      span.end("sample folder not found", { sampleDir: cfg().sampleDir }, "warn");
       toast.danger("Sample folder not found", {
         description: "Choose an existing sample folder in the settings to drag samples into your DAW."
       });
@@ -198,25 +337,24 @@ export default function SampleListEntry(
     }
 
     if (samplePath == null) {
+      span.end("path too long", { fullPath, length: fullPath.length }, "warn");
       toast.danger("Can't drag this sample", {
         description: "The path to your sample folder is too long for Windows. Choose a shorter one in the settings."
       });
       return;
     }
 
-    const dragParams = {
-      item: [fullPath],
-      icon: DRAG_PREVIEW_ICON
-    };
+    span.step("resolved path", { fullPath });
 
     setFgLoading(true);
     try {
-      await ensureAudioDecoded();
+      await ensureAudioDecoded(span);
 
       if (!await checkFileExists(cfg().sampleDir, samplePath)) {
         if (cfg().placeholders) {
           await createPlaceholder(cfg().sampleDir, samplePath);
-          startDrag(dragParams);
+          span.step("created placeholder");
+          beginDrag(fullPath, span, mouse);
         }
 
         // decodeAudioData resamples to the context's rate, so decode at the MP3's
@@ -226,7 +364,29 @@ export default function SampleListEntry(
 
         // decodeAudioData detaches the buffer we give it, so pass a copy to
         // keep the decoded sample usable for playback afterwards.
+        span.log("debug", "decoding", { sampleRate, mp3Bytes: decodedSample.current!.byteLength });
         const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
+
+        const expectedLength = Math.round((sample.duration / 1000) * samples.sampleRate);
+        span.step("decoded MP3", {
+          length: samples.length,
+          expectedLength,
+          excess: samples.length - expectedLength,
+          channels: samples.numberOfChannels,
+          sampleRate: samples.sampleRate,
+          pcmBytes: samples.length * samples.numberOfChannels * 4
+        });
+
+        if (isVerbose()) {
+          span.log("debug", "onset before trimming", {
+            channels: Array.from(
+              { length: samples.numberOfChannels },
+              (_, i) => findOnset(samples.getChannelData(i), samples.sampleRate)
+            ),
+            mp3StartDelay: MP3_START_DELAY
+          });
+        }
+
         const channels: Float32Array[] = [];
 
         if (samples.length < 60 * samples.sampleRate) {
@@ -239,26 +399,44 @@ export default function SampleListEntry(
               : chan.length;
 
             channels.push(chan.subarray(start, end));
+
+            span.log("debug", "trimmed channel", {
+              channel: i, start, end, available: chan.length, resultLength: channels[i].length
+            });
+
+            if (end > chan.length) {
+              span.log("warn", "the decoded audio is shorter than expected", {
+                channel: i, missingSamples: end - chan.length
+              });
+            }
           }
-        } else {
+        }
+        else {
           // processing big samples may result in memory allocation errors (it sure did for me!!)
-          console.warn(`big boi detected of ${samples.length} samples - not pre-processing!`);
+          span.log("warn", "big boi detected - not pre-processing!", {
+            length: samples.length, seconds: samples.duration
+          });
         }
 
-        await writeSampleFile(cfg().sampleDir, samplePath, wav.encode(channels as unknown as ArrayBuffer[], {
+        const encoded = wav.encode(channels as unknown as ArrayBuffer[], {
           bitDepth: 16,
           sampleRate: samples.sampleRate
-        }));
+        });
+        span.step("encoded WAV", { bytes: encoded.byteLength, channels: channels.length });
+
+        await writeSampleFile(cfg().sampleDir, samplePath, encoded);
+        span.step("wrote file");
 
         if (!cfg().placeholders) {
-          startDrag(dragParams);
+          beginDrag(fullPath, span, mouse);
         }
-      } else {
-        startDrag(dragParams);
       }
-    } catch (err) {
-      console.error("failed to prepare sample for dragging:", err);
-    } finally {
+      else {
+        span.step("found existing file");
+        beginDrag(fullPath, span, mouse);
+      }
+    }
+    finally {
       setFgLoading(false);
     }
   }

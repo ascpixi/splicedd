@@ -17,3 +17,11 @@ Splicedd isn't notarized by Apple, so macOS will block it the first time you ope
 - run `xattr -dr com.apple.quarantine /Applications/Splicedd.app` in the Terminal.
 
 You only need to do this once.
+
+## Reporting issues
+Splicedd keeps logs that help with tracking down problems. To include them in a [bug report](https://github.com/ascpixi/splicedd/issues/new):
+1. turn on **Developer mode** in the settings,
+2. reproduce the problem,
+3. click **View logs** in the settings, then **Open folder**, and attach `splicedd.log`. If you've restarted Splicedd in the meantime (e.g. because it crashed), attach the most recent `splicedd_<date>.log` too.
+
+The logs include your searches, sample names, and folder paths (with your home folder replaced by `~`).

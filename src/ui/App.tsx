@@ -17,7 +17,12 @@ import BpmSelection, { BpmFilter, BpmFilterType } from "./components/BpmSelectio
 import { SamplePlaybackCancellation, SamplePlaybackContext } from "./playback";
 import { IN_TAURI, checkDirExists } from "../native";
 import { mockSearch } from "../dev/mock";
+import { createLogger } from "../log";
 import { FIELD_BUTTON_CLASSES, NO_PRESS_SCALE, TAG_PILL_CLASSES } from "./fieldStyles";
+
+const log = createLogger("search");
+
+let searchCount = 0;
 
 /**
  * Runs a Splice GraphQL request through the hidden splice.com helper webview
@@ -31,6 +36,8 @@ function spliceSearch(body: string): Promise<string> {
   }
 
   const id = crypto.randomUUID();
+  const startedAt = performance.now();
+  const elapsedMs = () => performance.now() - startedAt;
 
   return new Promise<string>((resolve, reject) => {
     let unlisten: (() => void) | null = null;
@@ -38,11 +45,15 @@ function spliceSearch(body: string): Promise<string> {
     // Re-emit periodically: the helper webview may not have registered its
     // listener yet (it's still loading splice.com / clearing Cloudflare), and
     // Tauri drops events that have no listener rather than queuing them.
-    const reEmit = setInterval(() => { emit("splice-search", { id, body }); }, 1500);
+    const reEmit = setInterval(() => {
+      log.debug("no response yet, sending the request again", { id, elapsedMs: elapsedMs() });
+      emit("splice-search", { id, body });
+    }, 1500);
 
     const settle = () => { clearInterval(reEmit); clearTimeout(timer); unlisten?.(); };
 
     const timer = setTimeout(() => {
+      log.error("request timed out", { id, elapsedMs: elapsedMs() });
       settle();
       reject(new Error("Splice search timed out (the helper webview may still be clearing Cloudflare)."));
     }, 20000);
@@ -51,6 +62,9 @@ function spliceSearch(body: string): Promise<string> {
       if (ev.payload.id !== id) return;
 
       settle();
+      log.debug("got response", {
+        id, ok: ev.payload.ok, chars: ev.payload.body?.length, error: ev.payload.error, elapsedMs: elapsedMs()
+      });
 
       if (ev.payload.ok && ev.payload.body != null) {
         resolve(ev.payload.body);
@@ -59,6 +73,7 @@ function spliceSearch(body: string): Promise<string> {
       }
     }).then(fn => {
       unlisten = fn;
+      log.debug("sending request", { id, chars: body.length, elapsedMs: elapsedMs() });
       emit("splice-search", { id, body });
     });
   });
@@ -128,8 +143,14 @@ function App() {
 
     const refresh = () => {
       checkDirExists(cfg().sampleDir)
-        .then(exists => setSampleDirMissing(!exists))
-        .catch(err => console.error("Failed to check the sample folder:", err));
+        .then(exists => {
+          if (!exists) {
+            log.warn("sample folder not found", { sampleDir: cfg().sampleDir });
+          }
+
+          setSampleDirMissing(!exists);
+        })
+        .catch(err => log.error("failed to check the sample folder", { err }));
     };
 
     refresh();
@@ -140,7 +161,7 @@ function App() {
   useEffect(() => {
     checkForUpdates()
       .then(setUpdate)
-      .catch(err => console.error("Update check failed:", err));
+      .catch(err => log.error("update check failed", { err }));
   }, []);
 
   // Results should be visible not only when a text query is entered, but also
@@ -262,6 +283,10 @@ function App() {
 
       setSearchLoading(true);
 
+      const searchId = ++searchCount;
+      const { attributes, legacy, limit, order, ...params } = payload.variables;
+      const span = log.span("search", params);
+
       let raw: string;
       try {
         // Routed through the hidden splice.com helper webview so the request clears
@@ -269,18 +294,43 @@ function App() {
         // Splice's CORS. A direct browser fetch from our own origin can't do this
         // without disabling web security, which breaks Tauri v2 IPC.
         raw = await spliceSearch(JSON.stringify(payload));
+        span.step("got response", { chars: raw.length });
         setSearchError(null);
-      } catch (err) {
+      }
+      catch (err) {
+        span.fail(err);
         setSearchError(err instanceof Error ? err.message : String(err));
         return;
-      } finally {
+      }
+      finally {
         setSearchLoading(false);
+      }
+
+      if (searchId != searchCount) {
+        span.log("warn", "a newer search was started in the meantime, but these results are displayed anyway", {
+          newerSearches: searchCount - searchId
+        });
       }
 
       pbCtx.cancellation?.(); // stop any sample that's currently playing
 
-      const respData: SpliceSearchResponse = JSON.parse(raw);
-      const data = respData.data.assetsSearch;
+      let data: SpliceSearchResponse["data"]["assetsSearch"];
+      try {
+        const respData: SpliceSearchResponse = JSON.parse(raw);
+        data = respData.data.assetsSearch;
+
+        span.step("parsed");
+        span.end("done", {
+          results: data.items.length,
+          records: data.response_metadata.records,
+          page: data.pagination_metadata.currentPage,
+          totalPages: data.pagination_metadata.totalPages
+        });
+      }
+      catch (err) {
+        span.fail(err, { raw: raw.slice(0, 500) });
+        throw err;
+      }
 
       setResults(data.items);
 

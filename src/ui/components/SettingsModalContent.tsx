@@ -1,8 +1,11 @@
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { Button, InputGroup, InputGroupInput, InputGroupPrefix, Link, ModalBody, ModalFooter, ModalHeader, ModalHeading, ModalIcon, Switch, SwitchControl, SwitchThumb } from "@heroui/react";
 import { FolderOpen, Wrench } from "lucide-react";
 import BrowseButton from "./BrowseButton";
+import LogViewerModal from "./LogViewerModal";
 import { cfg, mutateCfg, mutateCfgSync, useCfgSyncedState } from "../../config";
+import { IN_TAURI } from "../../native";
+import { setVerbose } from "../../log";
 import { refreshDarkMode } from "../theming";
 import { FIELD_BUTTON_CLASSES } from "../fieldStyles";
 
@@ -37,6 +40,8 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
   const trimDelay = useCfgSyncedState<boolean>("trimDelay");
   const darkMode = useCfgSyncedState<boolean>("darkMode");
   const checkUpdates = useCfgSyncedState<boolean>("checkUpdates");
+  const developerMode = useCfgSyncedState<boolean>("developerMode");
+  const [logsOpen, setLogsOpen] = useState(false);
 
   async function closeFirstTimeSetup() {
     // Do not dismiss setup until both the folder and configured flag are on
@@ -50,8 +55,15 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
     refreshDarkMode();
   }
 
+  function changeDeveloperMode(enabled: boolean) {
+    mutateCfgSync(enabled, developerMode);
+    setVerbose(enabled);
+  }
+
   return (
     <>
+      { logsOpen && <LogViewerModal onClose={() => setLogsOpen(false)} /> }
+
       <ModalHeader className="flex-row items-center gap-3">
         <ModalIcon className="bg-default text-foreground">
           <Wrench className="size-5" />
@@ -148,6 +160,32 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
               </Switch>
             }
           />
+
+          <SettingRow
+            title="Developer mode"
+            description="Log much more detail. Turn this on, then reproduce your problem before reporting it."
+            control={
+              <Switch
+                isSelected={ cfg().developerMode || import.meta.env.DEV }
+                isDisabled={ import.meta.env.DEV }
+                onChange={ changeDeveloperMode }
+                aria-label="Enable developer mode"
+              >
+                <SwitchControl><SwitchThumb /></SwitchControl>
+              </Switch>
+            }
+          />
+
+          <SettingRow
+            title="Logs"
+            description="Attach these when reporting an issue. They include your searches, sample names, and folder paths."
+            control={
+              <Button variant="outline" className={FIELD_BUTTON_CLASSES}
+                isDisabled={!IN_TAURI}
+                onClick={() => setLogsOpen(true)}
+              >View logs</Button>
+            }
+          />
         </div>
       </ModalBody>
 
@@ -166,6 +204,8 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
           by <Link className="text-xs" href="https://ascpixi.github.io" target="_blank">@ascpixi</Link>
           {" · "}
           <Link className="text-xs" href="https://github.com/ascpixi/splicedd" target="_blank">GitHub</Link>
+          {" · "}
+          <Link className="text-xs" href="https://github.com/ascpixi/splicedd/issues/new" target="_blank">Report an issue</Link>
           {" · "}
           v{__APP_VERSION__}
         </p>

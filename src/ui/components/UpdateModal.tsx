@@ -5,6 +5,9 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-shell";
 
 import { ReleaseNotes, UpdateInfo, disableUpdateChecks, installUpdate, opensReleasePage, skipUpdate } from "../../updater";
+import { createLogger } from "../../log";
+
+const log = createLogger("updater");
 
 /**
  * A dialog shown on startup when a newer release of Splicedd is available.
@@ -38,7 +41,9 @@ export default function UpdateModal({ update, onDismiss }: {
       try {
         await installUpdate(update);
         onDismiss();
-      } catch (err) {
+      }
+      catch (err) {
+        log.error("update failed", { err });
         setError(err instanceof Error ? err.message : String(err));
       }
       return;
@@ -48,7 +53,9 @@ export default function UpdateModal({ update, onDismiss }: {
     try {
       // If this succeeds, the installer is running and the app is about to exit.
       await installUpdate(update);
-    } catch (err) {
+    }
+    catch (err) {
+      log.error("update failed", { err });
       setError(err instanceof Error ? err.message : String(err));
       setDownloading(false);
       setProgress(null);
@@ -279,7 +286,10 @@ function ExternalLink({ href, children }: { href: string, children: React.ReactN
   return (
     <a
       href={href}
-      onClick={e => { e.preventDefault(); open(href).catch(() => {}); }}
+      onClick={e => {
+        e.preventDefault();
+        open(href).catch(err => log.warn("failed to open link", { href, err }));
+      }}
       className="text-primary underline underline-offset-2 hover:opacity-80"
     >
       {children}

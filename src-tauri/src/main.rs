@@ -2,9 +2,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod files;
+mod logging;
 mod updater;
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::webview::PageLoadEvent;
+use tauri::{Listener, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 // Splice's GraphQL endpoint sits behind Cloudflare Bot Management, which rejects
 // any client whose TLS/HTTP2 fingerprint isn't a real browser (Tauri's built-in
@@ -53,18 +55,45 @@ const SPLICE_HELPER_INIT: &str = r#"
     };
   }
 
+  var loadedAt = Date.now();
+  var seenIds = {};
+
   function start() {
     var event = getEventApi();
     if (!event) { setTimeout(start, 100); return; }
+
+    // This page can't write to the log file, so `logging::log_helper_message` does it
+    // on our behalf.
+    function log(level, message) {
+      try {
+        Promise.resolve(event.emit("splice-helper-log", {
+          timestamp: Date.now(), level: level, message: message
+        })).catch(function () {});
+      }
+      catch (e) {
+        // nothing we can do about it
+      }
+    }
+
+    log("info", "ready after " + (Date.now() - loadedAt) + "ms at " + location.origin + location.pathname);
 
     event.listen("splice-search", async function (msg) {
       var id = msg.payload.id;
       var body = msg.payload.body;
       var lastErr = null;
+      var startedAt = Date.now();
+
+      var receivedCount = seenIds[id] = (seenIds[id] || 0) + 1;
+      log(
+        receivedCount > 1 ? "warn" : "debug",
+        "[" + id + "] received request (" + body.length + " chars" +
+          (receivedCount > 1 ? ", delivery #" + receivedCount : "") + ")"
+      );
 
       // Cloudflare clearance can take a moment after the page loads, so retry
       // a few times before giving up.
       for (var attempt = 0; attempt < 4; attempt++) {
+        var attemptedAt = Date.now();
         try {
           var resp = await fetch(GRAPHQL_URL, {
             method: "POST",
@@ -72,17 +101,28 @@ const SPLICE_HELPER_INIT: &str = r#"
             body: body
           });
           var text = await resp.text();
+          log(
+            "debug",
+            "[" + id + "] attempt " + (attempt + 1) + ": HTTP " + resp.status + ", " + text.length +
+              " chars in " + (Date.now() - attemptedAt) + "ms, total " + (Date.now() - startedAt) + "ms"
+          );
           if (resp.ok) {
             event.emit("splice-result", { id: id, ok: true, body: text });
             return;
           }
           lastErr = "Splice returned HTTP " + resp.status;
-        } catch (e) {
+        }
+        catch (e) {
           lastErr = String(e);
         }
+        log(
+          "warn",
+          "[" + id + "] attempt " + (attempt + 1) + " failed after " + (Date.now() - attemptedAt) + "ms: " + lastErr
+        );
         await new Promise(function (r) { setTimeout(r, 700); });
       }
 
+      log("error", "[" + id + "] giving up after " + (Date.now() - startedAt) + "ms");
       event.emit("splice-result", { id: id, ok: false, error: lastErr || "unknown error" });
     });
   }
@@ -101,13 +141,41 @@ fn main() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
+    logging::install_panic_hook();
+
     tauri::Builder::default()
+        // Needs to come first, so that the other plugins can log.
+        .plugin(logging::init())
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
+        .on_page_load(|webview, payload| {
+            // A page load of the main window that isn't the first one means that the
+            // webview was reloaded, or that its process crashed and got restarted.
+            log::info!(
+                "[{}] page load {}: {}",
+                webview.label(),
+                match payload.event() {
+                    PageLoadEvent::Started => "started",
+                    PageLoadEvent::Finished => "finished",
+                },
+                logging::strip_query(payload.url().as_str())
+            );
+        })
+        .on_window_event(|window, event| match event {
+            WindowEvent::Focused(focused) => log::debug!("[{}] focused: {focused}", window.label()),
+            WindowEvent::CloseRequested { .. } => log::info!("[{}] close requested", window.label()),
+            WindowEvent::Destroyed => log::info!("[{}] destroyed", window.label()),
+            _ => {}
+        })
         .setup(|app| {
+            logging::start_session(app.handle());
+
+            // This must be listened for before the helper is created.
+            app.listen("splice-helper-log", |event| logging::log_helper_message(event.payload()));
+
             // Create this before the frontend starts. The config loader and
             // writer can then safely access config.json through the fs plugin.
             std::fs::create_dir_all(app.path().app_config_dir()?)?;
@@ -130,8 +198,19 @@ fn main() {
             files::dir_exists,
             files::create_placeholder_file,
             updater::fetch_releases,
-            updater::install_update
+            updater::install_update,
+            logging::write_log_entries,
+            logging::set_verbose_logging,
+            logging::list_log_files,
+            logging::read_log_file,
+            logging::open_log_dir
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_, event| {
+            if let RunEvent::Exit = event {
+                log::info!("exiting");
+                log::logger().flush();
+            }
+        });
 }

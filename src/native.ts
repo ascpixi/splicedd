@@ -1,4 +1,7 @@
-import { invoke } from '@tauri-apps/api/core';
+import { InvokeArgs, invoke as rawInvoke } from '@tauri-apps/api/core';
+import { createLogger, LogFields } from './log';
+
+const log = createLogger("native");
 
 /**
  * Whether the app is running inside the Tauri shell. When `false` (e.g. when
@@ -17,15 +20,44 @@ export const IS_WINDOWS = navigator.userAgent.includes("Windows");
 export const WINDOWS_MAX_PATH = 259;
 
 /**
+ * Invokes a command, logging how long it took. As arguments can be huge, only the given `fields` are logged.
+ */
+export async function invoke<T>(command: string, args?: InvokeArgs, fields?: LogFields): Promise<T> {
+  const startedAt = performance.now();
+  log.trace(`invoking ${command}`, fields);
+
+  try {
+    const result = await rawInvoke<T>(command, args);
+    log.trace(`${command} returned`, { elapsedMs: performance.now() - startedAt });
+    return result;
+  }
+  catch (err) {
+    log.error(`${command} failed`, { ...fields, err, elapsedMs: performance.now() - startedAt });
+    throw err;
+  }
+}
+
+/**
  * Writes a file to the path retriveved by combining `baseDir` and `relativePath`.
  * The path is required to end with ".wav".
  */
 // /src-tauri/src/files.rs
 export async function writeSampleFile(baseDir: string, relativePath: string, buffer: Buffer) {
-  await invoke("write_sample_file", {
-    baseDir,
-    relativePath,
-    buffer: Array.from(buffer)
+  const startedAt = performance.now();
+  const bytes = Array.from(buffer);
+  const convertedAt = performance.now();
+
+  await invoke(
+    "write_sample_file",
+    { baseDir, relativePath, buffer: bytes },
+    { relativePath, bytes: bytes.length }
+  );
+
+  // The backend logs how long the write itself took, so what remains is the IPC overhead.
+  log.debug("write_sample_file timing", {
+    bytes: bytes.length,
+    convertMs: convertedAt - startedAt,
+    invokeMs: performance.now() - convertedAt
   });
 }
 
@@ -34,10 +66,7 @@ export async function writeSampleFile(baseDir: string, relativePath: string, buf
  */
 // /src-tauri/src/files.rs
 export async function checkFileExists(baseDir: string, relativePath: string) {
-  return await invoke<boolean>("file_exists", {
-    baseDir,
-    relativePath
-  });
+  return await invoke<boolean>("file_exists", { baseDir, relativePath }, { relativePath });
 }
 
 /**
@@ -56,8 +85,5 @@ export async function checkDirExists(path: string) {
  */
 // /src-tauri/src/files.rs
 export async function createPlaceholder(baseDir: string, relativePath: string) {
-  await invoke("create_placeholder_file", {
-    baseDir,
-    relativePath
-  });
+  await invoke("create_placeholder_file", { baseDir, relativePath }, { relativePath });
 }

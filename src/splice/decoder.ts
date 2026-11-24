@@ -38,6 +38,14 @@ export const MP3_START_DELAY = 576 + 529;
  * @returns The sample rate in Hz, or `null` if no valid frame header was found.
  */
 export function getMp3SampleRate(data: Uint8Array) {
+  return findMp3Frame(data)?.sampleRate ?? null;
+}
+
+/**
+ * Finds the first frame of an MP3 file.
+ * @returns Its offset and sample rate, or `null` if no valid frame header was found.
+ */
+function findMp3Frame(data: Uint8Array) {
   let i = 0;
 
   // Skip an ID3v2 tag, if present - its size is a 28-bit "syncsafe" integer.
@@ -58,10 +66,33 @@ export function getMp3SampleRate(data: Uint8Array) {
       continue; // reserved values - not a frame header
 
     const rate = [44100, 48000, 32000][rateIdx];
-    return version == 3 ? rate : version == 2 ? rate / 2 : rate / 4;
+    return {
+      offset: i,
+      sampleRate: version == 3 ? rate : version == 2 ? rate / 2 : rate / 4
+    };
   }
 
   return null;
+}
+
+/**
+ * Describes the parts of an MP3 file that influence the timing of the decoded audio.
+ */
+export function describeMp3(data: Uint8Array) {
+  const frame = findMp3Frame(data);
+  if (frame == null)
+    return { valid: false, firstBytes: Array.from(data.subarray(0, 16)) };
+
+  // These headers live in the first frame. When one of them is present, decoders
+  // may strip the encoder delay by themselves - see `MP3_START_DELAY`.
+  const firstFrame = String.fromCharCode(...data.subarray(frame.offset, frame.offset + 256));
+
+  return {
+    valid: true,
+    ...frame,
+    header: Array.from(data.subarray(frame.offset, frame.offset + 4), x => x.toString(16).padStart(2, "0")).join(""),
+    gaplessHeaders: ["Xing", "Info", "VBRI", "LAME", "Lavc"].filter(x => firstFrame.includes(x))
+  };
 }
 
 function decodePass(i: number, arr: Uint8Array, encodeBlk: string, size: number) {
