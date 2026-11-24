@@ -50,11 +50,11 @@ export default function BpmSelection({
   function handleSave() {
     if (tab == "exact") {
       onSave("exact", { bpm: exactBpm!.toString() });
-    } else {
-      onSave("range", {
-        minBpm: minBpm ?? MIN_BPM,
-        maxBpm: maxBpm ?? MAX_BPM
-      });
+    }
+    else {
+      // The inputs don't keep the user from entering these the other way around.
+      const [min, max] = [minBpm ?? MIN_BPM, maxBpm ?? MAX_BPM].sort((a, b) => a - b);
+      onSave("range", { minBpm: min, maxBpm: max });
     }
   }
 
