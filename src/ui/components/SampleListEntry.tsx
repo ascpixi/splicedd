@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
 import * as wav from "node-wav";
-import { checkDirExists, checkFileExists, createPlaceholder, IS_WINDOWS, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
+import { checkDirExists, checkFileExists, createPlaceholder, IS_WINDOWS, removePlaceholder, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
 import { join } from "@tauri-apps/api/path";
 
 import { cfg } from "../../config";
@@ -253,6 +253,12 @@ export default function SampleListEntry(
 
   const sanitizePath = (x: string) => x.replace(/[<>:"|?* ]/g, "_");
 
+  /** Incremented each time the user attempts to drag the sample. */
+  const dragAttempt = useRef(0);
+
+  /** The ongoing export of the sample, if any. */
+  const pendingExport = useRef<Promise<void> | null>(null);
+
   async function handleDrag(ev: React.MouseEvent<HTMLDivElement, MouseEvent>) {
     // Verify that the parent of the element that we began the dragging from
     // is not explicitly marked as non-draggable (as it may be clicked etc.)
@@ -275,14 +281,23 @@ export default function SampleListEntry(
     // Preparing a sample takes a while, and the OS only lets us start a drag if
     // the mouse button is still held down by the time we're done.
     const mouse = trackMouseRelease();
+    const attempt = ++dragAttempt.current;
 
     try {
       await prepareAndDrag(span, mouse);
     }
     catch (err) {
       span.fail(err, { mouseHeldForMs: mouse.heldFor() });
+
+      if (attempt == dragAttempt.current) {
+        toast.danger("Couldn't prepare this sample", { description: "Please try dragging it again." });
+      }
     }
     finally {
+      if (attempt == dragAttempt.current) {
+        setFgLoading(false);
+      }
+
       span.end("done", { mouseHeldForMs: mouse.heldFor() });
       mouse.stop();
     }
@@ -346,91 +361,103 @@ export default function SampleListEntry(
 
     span.step("resolved path", { fullPath });
 
-    setFgLoading(true);
-    try {
-      await ensureAudioDecoded(span);
-
-      if (!await checkFileExists(cfg().sampleDir, samplePath)) {
-        if (cfg().placeholders) {
-          await createPlaceholder(cfg().sampleDir, samplePath);
-          span.step("created placeholder");
-          beginDrag(fullPath, span, mouse);
-        }
-
-        // decodeAudioData resamples to the context's rate, so decode at the MP3's
-        // own rate - this keeps the output unaltered and MP3_START_DELAY exact.
-        const sampleRate = getMp3SampleRate(decodedSample.current!) ?? 44100;
-        const actx = new OfflineAudioContext(1, 1, sampleRate);
-
-        // decodeAudioData detaches the buffer we give it, so pass a copy to
-        // keep the decoded sample usable for playback afterwards.
-        span.log("debug", "decoding", { sampleRate, mp3Bytes: decodedSample.current!.byteLength });
-        const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
-
-        const expectedLength = Math.round((sample.duration / 1000) * samples.sampleRate);
-        span.step("decoded MP3", {
-          length: samples.length,
-          expectedLength,
-          excess: samples.length - expectedLength,
-          channels: samples.numberOfChannels,
-          sampleRate: samples.sampleRate,
-          pcmBytes: samples.length * samples.numberOfChannels * 4
-        });
-
-        if (isVerbose()) {
-          span.log("debug", "onset before trimming", {
-            channels: Array.from(
-              { length: samples.numberOfChannels },
-              (_, i) => findOnset(samples.getChannelData(i), samples.sampleRate)
-            ),
-            mp3StartDelay: MP3_START_DELAY
-          });
-        }
-
-        const channels: Float32Array[] = [];
-
-        for (let i = 0; i < samples.numberOfChannels; i++) {
-          const chan = samples.getChannelData(i);
-
-          const start = cfg().trimDelay ? MP3_START_DELAY : 0;
-          const end = cfg().trimDelay
-            ? Math.round((sample.duration / 1000) * samples.sampleRate) + start
-            : chan.length;
-
-          // This is merely a view, so it's cheap even for really long samples.
-          channels.push(chan.subarray(start, end));
-
-          span.log("debug", "trimmed channel", {
-            channel: i, start, end, available: chan.length, resultLength: channels[i].length
-          });
-
-          if (end > chan.length) {
-            span.log("warn", "the decoded audio is shorter than expected", {
-              channel: i, missingSamples: end - chan.length
-            });
-          }
-        }
-
-        const encoded = wav.encode(channels as unknown as ArrayBuffer[], {
-          bitDepth: 16,
-          sampleRate: samples.sampleRate
-        });
-        span.step("encoded WAV", { bytes: encoded.byteLength, channels: channels.length });
-
-        await writeSampleFile(cfg().sampleDir, samplePath, encoded);
-        span.step("wrote file");
-
-        if (!cfg().placeholders) {
-          beginDrag(fullPath, span, mouse);
-        }
-      }
-      else {
-        span.step("found existing file");
-        beginDrag(fullPath, span, mouse);
-      }
+    // A file that's still being written to exists, but isn't complete.
+    if (pendingExport.current == null && await checkFileExists(cfg().sampleDir, samplePath)) {
+      span.step("found existing file");
+      beginDrag(fullPath, span, mouse);
+      return;
     }
-    finally {
-      setFgLoading(false);
+
+    setFgLoading(true);
+    await ensureAudioDecoded(span);
+
+    const { placeholders } = cfg();
+    if (placeholders) {
+      await createPlaceholder(cfg().sampleDir, samplePath);
+      span.step("created placeholder");
+      beginDrag(fullPath, span, mouse);
+    }
+
+    pendingExport.current ??= exportSample(cfg().sampleDir, samplePath, span)
+      .finally(() => pendingExport.current = null);
+
+    await pendingExport.current;
+
+    if (!placeholders) {
+      beginDrag(fullPath, span, mouse);
+    }
+  }
+
+  /** Converts the (already downloaded) sample to a WAV file. */
+  async function exportSample(baseDir: string, samplePath: string, span: LogSpan) {
+    try {
+      // decodeAudioData resamples to the context's rate, so decode at the MP3's
+      // own rate - this keeps the output unaltered and MP3_START_DELAY exact.
+      const sampleRate = getMp3SampleRate(decodedSample.current!) ?? 44100;
+      const actx = new OfflineAudioContext(1, 1, sampleRate);
+
+      // decodeAudioData detaches the buffer we give it, so pass a copy to
+      // keep the decoded sample usable for playback afterwards.
+      span.log("debug", "decoding", { sampleRate, mp3Bytes: decodedSample.current!.byteLength });
+      const samples = await actx.decodeAudioData(decodedSample.current!.buffer.slice(0));
+
+      const expectedLength = Math.round((sample.duration / 1000) * samples.sampleRate);
+      span.step("decoded MP3", {
+        length: samples.length,
+        expectedLength,
+        excess: samples.length - expectedLength,
+        channels: samples.numberOfChannels,
+        sampleRate: samples.sampleRate,
+        pcmBytes: samples.length * samples.numberOfChannels * 4
+      });
+
+      if (isVerbose()) {
+        span.log("debug", "onset before trimming", {
+          channels: Array.from(
+            { length: samples.numberOfChannels },
+            (_, i) => findOnset(samples.getChannelData(i), samples.sampleRate)
+          ),
+          mp3StartDelay: MP3_START_DELAY
+        });
+      }
+
+      const channels: Float32Array[] = [];
+
+      for (let i = 0; i < samples.numberOfChannels; i++) {
+        const chan = samples.getChannelData(i);
+
+        const start = cfg().trimDelay ? MP3_START_DELAY : 0;
+        const end = cfg().trimDelay
+          ? Math.round((sample.duration / 1000) * samples.sampleRate) + start
+          : chan.length;
+
+        // This is merely a view, so it's cheap even for really long samples.
+        channels.push(chan.subarray(start, end));
+
+        span.log("debug", "trimmed channel", {
+          channel: i, start, end, available: chan.length, resultLength: channels[i].length
+        });
+
+        if (end > chan.length) {
+          span.log("warn", "the decoded audio is shorter than expected", {
+            channel: i, missingSamples: end - chan.length
+          });
+        }
+      }
+
+      const encoded = wav.encode(channels as unknown as ArrayBuffer[], {
+        bitDepth: 16,
+        sampleRate: samples.sampleRate
+      });
+      span.step("encoded WAV", { bytes: encoded.byteLength, channels: channels.length });
+
+      await writeSampleFile(baseDir, samplePath, encoded);
+      span.step("wrote file");
+    }
+    catch (err) {
+      // Don't leave an empty file behind. If this fails, the error has already been logged.
+      await removePlaceholder(baseDir, samplePath).catch(() => {});
+      throw err;
     }
   }
 

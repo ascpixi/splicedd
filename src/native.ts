@@ -64,7 +64,7 @@ export async function writeSampleFile(baseDir: string, relativePath: string, dat
 }
 
 /**
- * Checks if a file exists on the path retriveved by combining `baseDir` and `relativePath`.
+ * Checks if a file exists (and isn't empty) on the path retriveved by combining `baseDir` and `relativePath`.
  */
 // /src-tauri/src/files.rs
 export async function checkFileExists(baseDir: string, relativePath: string) {
@@ -88,4 +88,12 @@ export async function checkDirExists(path: string) {
 // /src-tauri/src/files.rs
 export async function createPlaceholder(baseDir: string, relativePath: string) {
   await invoke("create_placeholder_file", { baseDir, relativePath }, { relativePath });
+}
+
+/**
+ * Removes a file created by `createPlaceholder`, unless something has already been written to it.
+ */
+// /src-tauri/src/files.rs
+export async function removePlaceholder(baseDir: string, relativePath: string) {
+  await invoke("remove_placeholder_file", { baseDir, relativePath }, { relativePath });
 }

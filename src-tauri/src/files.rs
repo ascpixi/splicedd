@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -84,6 +84,9 @@ pub async fn write_sample_file(request: Request<'_>) -> Result<(), String> {
     match File::create(&full_path) {
         Ok(mut file) => {
             if let Err(e) = file.write_all(&buffer) {
+                // A partially written file would be mistaken for a complete one later on.
+                drop(file);
+                let _ = fs::remove_file(&full_path);
                 return fail(format!("Failed to write to file {full_path:?}: {e}"));
             }
         },
@@ -100,19 +103,27 @@ pub async fn write_sample_file(request: Request<'_>) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks if a file exists, and that it isn't empty. Empty files are either placeholders
+/// that are yet to be filled, or the remains of a failed download.
 #[tauri::command]
 pub async fn file_exists(base_dir: String, relative_path: String) -> Result<bool, String> {
     let mut full_path = PathBuf::from(base_dir);
     full_path.push(relative_path);
 
     match fs::metadata(&full_path) {
-        // Either a placeholder that's still being filled, or the remains of a failed download.
-        Ok(meta) if meta.len() == 0 => log::warn!("file_exists: {full_path:?} exists, but is empty"),
-        Ok(meta) => log::debug!("file_exists: {full_path:?} exists ({} bytes)", meta.len()),
-        Err(e) => log::debug!("file_exists: {full_path:?} isn't accessible: {e}"),
+        Ok(meta) if meta.len() == 0 => {
+            log::warn!("file_exists: {full_path:?} exists, but is empty");
+            Ok(false)
+        },
+        Ok(meta) => {
+            log::debug!("file_exists: {full_path:?} exists ({} bytes)", meta.len());
+            Ok(true)
+        },
+        Err(e) => {
+            log::debug!("file_exists: {full_path:?} isn't accessible: {e}");
+            Ok(false)
+        }
     }
-
-    Ok(full_path.exists())
 }
 
 #[tauri::command]
@@ -129,11 +140,33 @@ pub async fn create_placeholder_file(base_dir: String, relative_path: String) ->
 
     create_parent_dirs(&full_path)?;
 
-    match File::create(&full_path) {
+    // If the file already exists, its contents (which might be being written right now)
+    // have to be left alone.
+    match OpenOptions::new().write(true).create(true).truncate(false).open(&full_path) {
         Ok(_) => {
             log::info!("created a placeholder at {full_path:?}");
             Ok(())
         },
         Err(e) => fail(format!("Failed to create file {full_path:?}: {e}")),
+    }
+}
+
+/// Removes a placeholder that isn't going to be filled. Files that aren't empty are left alone.
+#[tauri::command]
+pub async fn remove_placeholder_file(base_dir: String, relative_path: String) -> Result<(), String> {
+    let mut full_path = PathBuf::from(base_dir);
+    full_path.push(relative_path);
+
+    match fs::metadata(&full_path) {
+        Ok(meta) if meta.is_file() && meta.len() == 0 => {},
+        _ => return Ok(()),
+    }
+
+    match fs::remove_file(&full_path) {
+        Ok(_) => {
+            log::info!("removed the placeholder at {full_path:?}");
+            Ok(())
+        },
+        Err(e) => fail(format!("Failed to remove {full_path:?}: {e}")),
     }
 }

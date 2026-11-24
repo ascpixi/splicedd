@@ -197,6 +197,7 @@ fn main() {
             files::file_exists,
             files::dir_exists,
             files::create_placeholder_file,
+            files::remove_placeholder_file,
             updater::fetch_releases,
             updater::install_update,
             logging::write_log_entries,
