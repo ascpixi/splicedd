@@ -17,7 +17,7 @@ use tauri::ipc::{Request, Response};
 use crate::files::{fail, read_body};
 use crate::logging::ms;
 use filterbank::Filterbank;
-use mp3::{Block, Mp3, LINES};
+use mp3::{Block, Mp3, LINES, MAX_QUANTIZED};
 
 /// The number of samples that precede the actual audio - that's the delay of LAME (576), and of any
 /// MP3 decoder (529). Decoders might hide the latter, but ours doesn't.
@@ -53,13 +53,16 @@ fn toggle_mid_side(mp3: &Mp3, lines: &mut Lines) {
 
 /// Retrieves the dequantized lines, along with the blocks of each channel.
 fn dequantize(mp3: &Mp3) -> (Lines, Vec<Vec<Block>>) {
+    // Raising each line to a power on its own would be really slow.
+    let powers: Vec<f64> = (0..=MAX_QUANTIZED).map(|q| (q as f64).powf(4.0 / 3.0)).collect();
+
     (0..mp3.channels)
         .map(|ch| {
             mp3.frames.iter()
                 .flat_map(|x| &x.granules)
                 .map(|x| {
                     let lines: Vec<f64> = x[ch].quantized.iter().zip(&x[ch].step)
-                        .map(|(&q, step)| (q.abs() as f64).powf(4.0 / 3.0) * q.signum() as f64 * step)
+                        .map(|(&q, step)| powers[q.unsigned_abs() as usize] * q.signum() as f64 * step)
                         .collect();
                     (lines, x[ch].block)
                 })

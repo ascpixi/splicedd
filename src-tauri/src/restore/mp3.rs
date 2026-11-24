@@ -8,6 +8,9 @@ use super::huffman as h;
 /// The number of MDCT lines in a granule.
 pub const LINES: usize = 576;
 
+/// The largest absolute value a quantized line can have - 15, plus 13 additional bits.
+pub const MAX_QUANTIZED: usize = 15 + (1 << 13) - 1;
+
 const SFB_LONG: [[usize; 23]; 3] = [
     [0, 4, 8, 12, 16, 20, 24, 30, 36, 44, 52, 62, 74, 90, 110, 134, 162, 196, 238, 288, 342, 418, 576],
     [0, 4, 8, 12, 16, 20, 24, 30, 36, 42, 50, 60, 72, 88, 106, 128, 156, 190, 230, 276, 330, 384, 576],
