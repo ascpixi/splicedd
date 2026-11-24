@@ -203,7 +203,7 @@ pub async fn write_log_entries(entries: Vec<FrontendLogEntry>) {
     }
 }
 
-/// A single log message sent by the splice.com helper webview.
+/// A single log message sent by the helper webview.
 #[derive(Deserialize)]
 struct HelperLogEntry {
     timestamp: i64,
@@ -211,7 +211,7 @@ struct HelperLogEntry {
     message: String,
 }
 
-/// Handles a `splice-helper-log` event, which the splice.com helper webview uses
+/// Handles a `splice-helper-log` event, which the helper webview uses
 /// to write to the log file, as it can't invoke any commands.
 pub fn log_helper_message(payload: &str) {
     let entry: HelperLogEntry = match serde_json::from_str(payload) {

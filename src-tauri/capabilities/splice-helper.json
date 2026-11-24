@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "splice-helper",
-  "description": "Lets the hidden splice.com helper webview relay GraphQL search requests to and from the main window over events. Scoped to Splice origins and event permissions only.",
+  "description": "Lets the hidden GraphQL-origin helper webview relay GraphQL search requests to and from the main window over events. Scoped to Splice origins and event permissions only.",
   "windows": ["splice-helper"],
   "remote": {
     "urls": ["https://splice.com/*", "https://*.splice.com/*"]

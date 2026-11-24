@@ -279,10 +279,8 @@ function App() {
 
       let raw: string;
       try {
-        // Routed through the hidden splice.com helper webview so the request clears
-        // Cloudflare Bot Management (which blocks non-browser TLS fingerprints) and
-        // Splice's CORS. A direct browser fetch from our own origin can't do this
-        // without disabling web security, which breaks Tauri v2 IPC.
+        // The hidden helper fetches on the API's own origin, avoiding the CORS
+        // preflight that can be rejected by Splice's browser verification.
         raw = await spliceSearch(JSON.stringify(payload));
         span.step("got response", { chars: raw.length });
         setSearchError(null);
