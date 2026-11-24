@@ -23,6 +23,9 @@ export default function PackList({ search, onPackOpen }: {
     container.current?.scrollTo({ top: 0, left: 0, behavior: "smooth" });
   }
 
+  // When there's nothing to display, this needs to be around for the user to be able to leave the page.
+  const pagination = <ResultPagination currentPage={search.page} totalPages={results?.totalPages ?? 0} onChange={changePage} />;
+
   return (<>
     { (knownGenres.length > 0 || search.genres.length > 0) &&
       <TagPills
@@ -32,11 +35,17 @@ export default function PackList({ search, onPackOpen }: {
     }
 
     { error != null
-      ? <StatusMessage icon="img/blob-think.png" details={error}>Something went wrong while searching.</StatusMessage>
+      ? <>
+          <StatusMessage icon="img/blob-think.png" details={error}>Something went wrong while searching.</StatusMessage>
+          { search.page > 1 && pagination }
+        </>
       : results == null
       ? <StatusMessage icon="img/blob-think.png">Looking for packs...</StatusMessage>
       : results.packs.length == 0
-      ? <StatusMessage icon="img/blob-think.png">Couldn't find any packs. Try changing your query and genres.</StatusMessage>
+      ? <>
+          <StatusMessage icon="img/blob-think.png">Couldn't find any packs. Try changing your query and genres.</StatusMessage>
+          { pagination }
+        </>
       : <div ref={container}
           className="flex-1 min-h-0 mt-2 overflow-y-auto scrollbar-thin shadow-md bg-surface p-6 rounded-3xl flex flex-col gap-6"
         >
@@ -46,7 +55,7 @@ export default function PackList({ search, onPackOpen }: {
             { results.packs.map(x => <PackCard key={x.uuid} pack={x} onOpen={() => onPackOpen(x)} />) }
           </div>
 
-          <ResultPagination currentPage={search.page} totalPages={results.totalPages} onChange={changePage} />
+          { pagination }
         </div>
     }
   </>);

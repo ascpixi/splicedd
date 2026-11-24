@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
-import { MAX_PACK_PAGE, SplicePackSearchResult, SpliceSearchResponse, createPackSearchRequest, createRandomSeed } from "../splice/api";
+import { MAX_PACK_PAGE, SplicePackSearchResult, createPackSearchRequest, createRandomSeed } from "../splice/api";
 import { SpliceSortBy, SpliceTag } from "../splice/entities";
-import { spliceSearch } from "../splice/request";
+import { searchAssets } from "../splice/request";
 import { createLogger } from "../log";
 
 const log = createLogger("packs");
@@ -36,41 +36,19 @@ async function searchPacks({ query, sortBy, genres, page, seed }: PackSearchPara
     payload.variables.random_seed = seed;
   }
 
-  const span = log.span("search", payload.variables);
+  const data = await searchAssets<SplicePackSearchResult>(payload, log.span("search", payload.variables));
 
-  try {
-    const raw = await spliceSearch(JSON.stringify(payload));
-    span.step("got response", { chars: raw.length });
+  return {
+    // Some packs consist solely of presets, which we don't support.
+    packs: data.items.filter(x => getSampleCount(x) !== 0),
 
-    const response: Partial<SpliceSearchResponse<SplicePackSearchResult>> & { errors?: { message: string }[] } = JSON.parse(raw);
-    const data = response.data?.assetsSearch;
+    genres: data.tag_summary
+      .filter(x => x.tag.taxonomy.name == "Genre")
+      .sort((a, b) => b.count - a.count)
+      .map(x => ({ uuid: x.tag.uuid, label: x.tag.label })),
 
-    if (data == null)
-      throw new Error(response.errors?.[0]?.message ?? "Splice returned an empty response.");
-
-    span.end("done", {
-      results: data.items.length,
-      records: data.response_metadata.records,
-      page: data.pagination_metadata.currentPage,
-      totalPages: data.pagination_metadata.totalPages
-    });
-
-    return {
-      // Some packs consist solely of presets, which we don't support.
-      packs: data.items.filter(x => getSampleCount(x) !== 0),
-
-      genres: data.tag_summary
-        .filter(x => x.tag.taxonomy.name == "Genre")
-        .sort((a, b) => b.count - a.count)
-        .map(x => ({ uuid: x.tag.uuid, label: x.tag.label })),
-
-      totalPages: Math.min(data.pagination_metadata.totalPages, MAX_PACK_PAGE)
-    };
-  }
-  catch (err) {
-    span.fail(err);
-    throw err;
-  }
+    totalPages: Math.min(data.pagination_metadata.totalPages, MAX_PACK_PAGE)
+  };
 }
 
 /** Returns the number of samples in the given pack, or `null` if it's unknown. */

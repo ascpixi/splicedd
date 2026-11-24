@@ -4,30 +4,28 @@ import { Alert, AlertContent, AlertDescription, AlertIndicator, AlertTitle, Butt
 import { InputGroup, InputGroupInput, InputGroupPrefix, InputGroupSuffix, Modal, Popover, PopoverContent, PopoverDialog, Select, SelectIndicator, SelectPopover, SelectTrigger, SelectValue } from "@heroui/react";
 import { ArrowUpDown, ChevronDown, Disc3, Guitar, Layers, Metronome, MoveRight, Music2, Repeat, Search, Wrench, X } from "lucide-react";
 import { cfg } from "../config";
-import { SpliceSample, SpliceSamplePack, SpliceSearchResponse, createRandomSeed, createSearchRequest } from "../splice/api";
-import { spliceSearch } from "../splice/request";
-import { ChordType, MusicKey, SpliceSampleType, SpliceSortBy, SpliceTag } from "../splice/entities";
+import { SpliceSamplePack } from "../splice/api";
+import { SpliceSampleType, SpliceSortBy, SpliceTag } from "../splice/entities";
 
 import SampleListEntry from "./components/SampleListEntry";
 import SettingsModalContent from "./components/SettingsModalContent";
 import UpdateModal from "./components/UpdateModal";
 import { UpdateInfo, checkForUpdates } from "../updater";
 import KeyScaleSelection from "./components/KeyScaleSelection";
-import BpmSelection, { BpmFilter, BpmFilterType } from "./components/BpmSelection";
+import BpmSelection from "./components/BpmSelection";
 import ModeToggle, { BrowsingMode } from "./components/ModeToggle";
 import PackList from "./components/PackList";
 import ResultPagination from "./components/ResultPagination";
 import StatusMessage from "./components/StatusMessage";
 import TagPills from "./components/TagPills";
 import { usePackSearch } from "./packSearch";
+import { useSampleSearch } from "./sampleSearch";
 import { PlaybackController } from "./playback";
 import { checkDirExists } from "../native";
 import { createLogger } from "../log";
 import { FIELD_BUTTON_CLASSES, NO_PRESS_SCALE } from "./fieldStyles";
 
-const log = createLogger("search");
-
-let searchCount = 0;
+const log = createLogger("app");
 
 function App() {
   const settings = useOverlayState({
@@ -37,42 +35,15 @@ function App() {
   const [mode, setMode] = useState<BrowsingMode>("samples");
   const packSearch = usePackSearch(mode == "packs");
 
-  const [bpmType, setBpmType] = useState<BpmFilterType>("exact");
-  const [bpm, setBpm] = useState<BpmFilter>();
+  const search = useSampleSearch();
+  const { sortBy, sampleType, bpmType, bpm, instruments, genres, tags, musicKey, chordType, pack: packFilter } = search.params;
+
   const [bpmOpen, setBpmOpen] = useState(false);
 
-  const [query, setQuery] = useState("");
-
-  const [results, setResults] = useState<SpliceSample[]>([]);
   const resultContainer = useRef<HTMLDivElement | null>(null);
-
-  const [queryTimer, setQueryTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
-
-  const [sortBy, setSortBy] = useState<SpliceSortBy>("popularity");
-  const [sampleType, setSampleType] = useState<SpliceSampleType | "any">("any")
-
-  const [knownInstruments, setKnownInstruments] = useState<{name: string, uuid: string}[]>([]);
-  const [knownGenres, setKnownGenres] = useState<{name: string, uuid: string}[]>([]);
-
-  const [instruments, setInstruments] = useState(new Set<string>([]));
-  const [genres, setGenres] = useState(new Set<string>([]));
-  let [tags, setTags] = useState<SpliceTag[]>([]);
-
-  const [knownTags, setKnownTags] = useState<SpliceTag[]>([]);
-
-  const [musicKey, setMusicKey] = useState<MusicKey | null>(null);
-  const [chordType, setChordType] = useState<ChordType | null>(null);
-
-  const [packFilter, setPackFilter] = useState<SpliceSamplePack | null>(null);
 
   // Where the pack that's being filtered by was picked, which is where the user is taken back to afterwards.
   const [packOrigin, setPackOrigin] = useState<BrowsingMode>("samples");
-
-  const [totalPages, setTotalPages] = useState(0);
-  const [currentPage, setCurrentPage] = useState(0);
-
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
 
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
 
@@ -110,17 +81,11 @@ function App() {
   // Results should be visible not only when a text query is entered, but also
   // when the user is filtering solely by tags, key, BPM, etc.
   const filtersActive =
-    tags.length > 0 || instruments.size > 0 || genres.size > 0 ||
+    tags.length > 0 || instruments.length > 0 || genres.length > 0 ||
     musicKey != null || chordType != null || bpm != null || sampleType != "any" ||
     packFilter != null;
 
-  useEffect(() => {
-    updateSearch(query);
-  }, [
-    sortBy, bpm, bpmType, sampleType,
-    instruments, genres, currentPage,
-    musicKey, chordType, packFilter
-  ]);
+  const resultsVisible = search.query.length > 0 || filtersActive;
 
   const [playback] = useState(() => new PlaybackController());
 
@@ -133,22 +98,24 @@ function App() {
   }, [playback]);
 
   useEffect(() => {
+    playback.stop(); // the sample that's playing might not be a part of the new results
     resultContainer.current?.scrollTo({ top: 0, left: 0 });
-  }, [packFilter]);
+  }, [playback, search.results]);
 
   function changeMode(newMode: BrowsingMode) {
     playback.stop(); // the sample that's playing is about to be hidden
     setMode(newMode);
   }
 
-  function ensureContraintsGathered() {
-    if (knownInstruments.length == 0 || knownGenres.length == 0) {
-      updateSearch("");
+  function ensureOptionsGathered() {
+    const { options, error, loading } = search;
+    if (error != null && !loading && (options.instruments.length == 0 || options.genres.length == 0)) {
+      search.retry();
     }
   }
 
   function changePage(n: number) {
-    setCurrentPage(n);
+    search.setPage(n);
     resultContainer.current?.scrollTo({ top: 0, left: 0, behavior: "smooth" });
   }
 
@@ -158,15 +125,7 @@ function App() {
       return;
     }
 
-    setQuery(ev.target.value);
-
-    if (queryTimer != null) {
-      clearTimeout(queryTimer);
-    }
-
-    // We set a timer, as to not overload Splice with needless requests while the user is typing.
-    let selfTimer = setTimeout(() => updateSearch(ev.target.value, true), 250);
-    setQueryTimer(selfTimer);
+    search.setQuery(ev.target.value);
   }
 
   function handleSearchKeyDown(ev: React.KeyboardEvent<HTMLInputElement>) {
@@ -177,17 +136,16 @@ function App() {
       packSearch.submit();
     }
     else {
-      updateSearch(query, true);
+      search.submit();
     }
   }
 
   function toggleTag(tag: SpliceTag) {
-    tags = tags.some(x => x.uuid == tag.uuid)
-      ? tags.filter(x => x.uuid != tag.uuid)
-      : [...tags, tag];
-
-    setTags(tags);
-    updateSearch(query, true);
+    search.refine({
+      tags: tags.some(x => x.uuid == tag.uuid)
+        ? tags.filter(x => x.uuid != tag.uuid)
+        : [...tags, tag]
+    });
   }
 
   function handleTagClick(tag: SpliceTag) {
@@ -203,14 +161,12 @@ function App() {
       return;
     }
 
-    setPackFilter(pack);
+    search.refine({ pack });
     setPackOrigin("samples");
-    setCurrentPage(1);
   }
 
   function clearPackFilter() {
-    setPackFilter(null);
-    setCurrentPage(1);
+    search.refine({ pack: null });
     changeMode(packOrigin);
   }
 
@@ -219,130 +175,24 @@ function App() {
    * is unrelated to the pack, and would most likely hide everything that's in it.
    */
   function openPack(pack: SpliceSamplePack) {
-    if (queryTimer != null) {
-      clearTimeout(queryTimer);
-    }
+    search.refine({
+      query: "",
+      tags: [],
+      instruments: [],
+      genres: [],
+      musicKey: null,
+      chordType: null,
+      bpm: undefined,
+      sampleType: "any",
+      pack
+    });
 
-    setQuery("");
-    setTags([]);
-    setInstruments(new Set());
-    setGenres(new Set());
-    setMusicKey(null);
-    setChordType(null);
-    setBpm(undefined);
-    setSampleType("any");
-
-    setPackFilter(pack);
     setPackOrigin("packs");
-    setCurrentPage(1);
     changeMode("samples");
   }
 
-  async function updateSearch(newQuery: string, resetPage = false) {
-      const payload = createSearchRequest(newQuery);
-      payload.variables.sort = sortBy;
-      if (sortBy == "random") {
-        payload.variables.random_seed = createRandomSeed();
-      }
-
-      payload.variables.tags = tags.map(x => x.uuid);
-
-      if (bpmType == "exact") {
-        payload.variables.bpm = bpm?.bpm;
-      } else {
-        payload.variables.min_bpm = bpm?.minBpm;
-        payload.variables.max_bpm = bpm?.maxBpm;
-      }
-
-      if (sampleType != "any") {
-        payload.variables.asset_category_slug = sampleType;
-      }
-
-      payload.variables.tags.push(...instruments);
-      payload.variables.tags.push(...genres);
-
-      payload.variables.chord_type = chordType ?? undefined;
-      payload.variables.key = musicKey ?? undefined;
-
-      if (packFilter != null) {
-        payload.variables.parent_asset_uuid = packFilter.uuid;
-        payload.variables.parent_asset_type = "pack";
-      }
-
-      payload.variables.page = resetPage ? 1 : currentPage;
-
-      setSearchLoading(true);
-
-      const searchId = ++searchCount;
-      const { attributes, legacy, limit, order, ...params } = payload.variables;
-      const span = log.span("search", params);
-
-      let raw: string;
-      try {
-        // The hidden helper fetches on the API's own origin, avoiding the CORS
-        // preflight that can be rejected by Splice's browser verification.
-        raw = await spliceSearch(JSON.stringify(payload));
-        span.step("got response", { chars: raw.length });
-        setSearchError(null);
-      }
-      catch (err) {
-        span.fail(err);
-        setSearchError(err instanceof Error ? err.message : String(err));
-        return;
-      }
-      finally {
-        setSearchLoading(false);
-      }
-
-      if (searchId != searchCount) {
-        span.log("warn", "a newer search was started in the meantime, but these results are displayed anyway", {
-          newerSearches: searchCount - searchId
-        });
-      }
-
-      playback.stop(); // stop any sample that's currently playing
-
-      let data: SpliceSearchResponse["data"]["assetsSearch"];
-      try {
-        const respData: SpliceSearchResponse = JSON.parse(raw);
-        data = respData.data.assetsSearch;
-
-        span.step("parsed");
-        span.end("done", {
-          results: data.items.length,
-          records: data.response_metadata.records,
-          page: data.pagination_metadata.currentPage,
-          totalPages: data.pagination_metadata.totalPages
-        });
-      }
-      catch (err) {
-        span.fail(err, { raw: raw.slice(0, 500) });
-        throw err;
-      }
-
-      setResults(data.items);
-
-      setCurrentPage(resetPage ? 1 : data.pagination_metadata.currentPage);
-      setTotalPages(data.pagination_metadata.totalPages);
-
-      function findConstraints(name: "Genre" | "Instrument") {
-        return data.tag_summary.map(x => x.tag)
-          .filter(x => x.taxonomy.name == name)
-          .map(x => ({ name: x.label, uuid: x.uuid }));
-      }
-
-      setKnownGenres(findConstraints("Genre"));
-      setKnownInstruments(findConstraints("Instrument"));
-
-      const seenTags = new Set<string>();
-      setKnownTags(
-        [...data.tag_summary]
-          .sort((a, b) => b.count - a.count)
-          .map(x => x.tag)
-          .filter(x => !seenTags.has(x.uuid) && (seenTags.add(x.uuid), true))
-          .map(x => ({ uuid: x.uuid, label: x.label }))
-      );
-  }
+  // When there's nothing to display, this needs to be around for the user to be able to leave the page.
+  const pagination = <ResultPagination currentPage={search.params.page} totalPages={search.totalPages} onChange={changePage} />;
 
   return (
     <main className="flex flex-col gap-2 h-screen p-6">
@@ -372,13 +222,13 @@ function App() {
             type="text"
             aria-label={`Search for ${mode}`}
             placeholder={`Search for ${mode}...`}
-            value={mode == "packs" ? packSearch.query : query}
+            value={mode == "packs" ? packSearch.query : search.query}
             onKeyDown={handleSearchKeyDown}
             onChange={handleSearchInput}
           />
           { /* With no query or filters, a search only fetches the filter options
                in the background (results aren't shown), so don't show a spinner */ }
-          { (mode == "packs" ? packSearch.loading : searchLoading && (query.length > 0 || filtersActive)) &&
+          { (mode == "packs" ? packSearch.loading : search.loading && resultsVisible) &&
             <InputGroupSuffix>
               <ProgressCircle aria-label="Loading results..." isIndeterminate className="size-5">
                 <ProgressCircleTrack>
@@ -393,7 +243,7 @@ function App() {
         <Select
           aria-label="Sort by"
           value={mode == "packs" ? packSearch.sortBy : sortBy}
-          onChange={v => (mode == "packs" ? packSearch.setSortBy : setSortBy)(v as SpliceSortBy)}
+          onChange={v => mode == "packs" ? packSearch.setSortBy(v as SpliceSortBy) : search.refine({ sortBy: v as SpliceSortBy })}
           className="w-48"
         >
           <SelectTrigger>
@@ -422,19 +272,19 @@ function App() {
           <Select aria-label="Instruments"
             selectionMode="multiple"
             placeholder="Instruments"
-            value={Array.from(instruments)}
-            onChange={x => setInstruments(new Set(x as string[]))}
+            value={instruments}
+            onChange={x => search.refine({ instruments: x as string[] })}
             className="flex-1 min-w-0"
             fullWidth
           >
-            <SelectTrigger onPress={ensureContraintsGathered} className="max-w-full">
+            <SelectTrigger onPress={ensureOptionsGathered} className="max-w-full">
               <Guitar className="size-4 me-2 self-center shrink-0 text-muted" />
               <SelectValue className="truncate" />
               <SelectIndicator />
             </SelectTrigger>
             <SelectPopover>
-              <ListBox items={knownInstruments}>
-                {(x: {name: string, uuid: string}) => <ListBoxItem id={x.uuid} textValue={x.name}>{x.name}<ListBoxItemIndicator /></ListBoxItem>}
+              <ListBox items={search.options.instruments}>
+                {(x: SpliceTag) => <ListBoxItem id={x.uuid} textValue={x.label}>{x.label}<ListBoxItemIndicator /></ListBoxItem>}
               </ListBox>
             </SelectPopover>
           </Select>
@@ -442,19 +292,19 @@ function App() {
           <Select aria-label="Genres"
             selectionMode="multiple"
             placeholder="Genres"
-            value={Array.from(genres)}
-            onChange={x => setGenres(new Set(x as string[]))}
+            value={genres}
+            onChange={x => search.refine({ genres: x as string[] })}
             className="flex-1 min-w-0"
             fullWidth
           >
-            <SelectTrigger onPress={ensureContraintsGathered} className="max-w-full">
+            <SelectTrigger onPress={ensureOptionsGathered} className="max-w-full">
               <Disc3 className="size-4 me-2 self-center shrink-0 text-muted" />
               <SelectValue className="truncate" />
               <SelectIndicator />
             </SelectTrigger>
             <SelectPopover>
-              <ListBox items={knownGenres}>
-                {(x: {name: string, uuid: string}) => <ListBoxItem id={x.uuid} textValue={x.name}>{x.name}<ListBoxItemIndicator /></ListBoxItem>}
+              <ListBox items={search.options.genres}>
+                {(x: SpliceTag) => <ListBoxItem id={x.uuid} textValue={x.label}>{x.label}<ListBoxItemIndicator /></ListBoxItem>}
               </ListBox>
             </SelectPopover>
           </Select>
@@ -474,7 +324,8 @@ function App() {
             <PopoverContent placement="bottom">
               <PopoverDialog className="flex p-6">
                 <KeyScaleSelection
-                  onChordSet={setChordType} onKeySet={setMusicKey}
+                  onChordSet={chordType => search.refine({ chordType })}
+                  onKeySet={musicKey => search.refine({ musicKey })}
                   selectedChord={chordType} selectedKey={musicKey}
                 />
               </PopoverDialog>
@@ -502,12 +353,11 @@ function App() {
                   bpmType={bpmType}
                   bpm={bpm}
                   onSave={(type, newBpm) => {
-                    setBpmType(type);
-                    setBpm(newBpm);
+                    search.refine({ bpmType: type, bpm: newBpm });
                     setBpmOpen(false);
                   }}
                   onClear={() => {
-                    setBpm(undefined);
+                    search.refine({ bpm: undefined });
                     setBpmOpen(false);
                   }}
                 />
@@ -517,7 +367,7 @@ function App() {
 
           <Select aria-label="Type"
             value={sampleType}
-            onChange={v => setSampleType(v as SpliceSampleType | "any")}
+            onChange={v => search.refine({ sampleType: v as SpliceSampleType | "any" })}
             className="flex-1 min-w-0"
           >
             <SelectTrigger>
@@ -545,8 +395,8 @@ function App() {
           </Select>
         </div>
 
-        { (query.length > 0 || filtersActive) && knownTags.length > 0 &&
-          <TagPills tags={knownTags} selected={tags} onToggle={toggleTag} expandLabel="Show all tags" collapseLabel="Show fewer tags" />
+        { resultsVisible && (search.options.tags.length > 0 || tags.length > 0) &&
+          <TagPills tags={search.options.tags} selected={tags} onToggle={toggleTag} expandLabel="Show all tags" collapseLabel="Show fewer tags" />
         }
 
         { /* Active pack filter banner; visually distinct from the tag pills so
@@ -595,23 +445,31 @@ function App() {
 
       <div className={mode == "samples" ? "contents" : "hidden"}>
         {
-          searchError != null
-          ? <StatusMessage icon="img/blob-think.png" details={searchError}>Something went wrong while searching.</StatusMessage>
-          : (query.length > 0 || filtersActive)
-          ? results.length == 0
-          ? <StatusMessage icon="img/blob-think.png">Couldn't find anything. Try changing your query and filters.</StatusMessage>
+          search.error != null
+          ? <>
+              <StatusMessage icon="img/blob-think.png" details={search.error}>Something went wrong while searching.</StatusMessage>
+              { search.params.page > 1 && pagination }
+            </>
+          : resultsVisible
+          ? search.results == null
+          ? <StatusMessage icon="img/blob-think.png">Looking for samples...</StatusMessage>
+          : search.results.length == 0
+          ? <>
+              <StatusMessage icon="img/blob-think.png">Couldn't find anything. Try changing your query and filters.</StatusMessage>
+              { search.params.page > 1 && pagination }
+            </>
           : <div ref={resultContainer}
               className="flex-1 min-h-0 mt-2 overflow-y-auto scrollbar-thin shadow-md bg-surface p-6 rounded-3xl flex flex-col gap-6"
           >
                 <div className={`flex-1 flex flex-col transition-opacity duration-150
-                                ${searchLoading ? "opacity-50 pointer-events-none" : ""}`}
+                                ${search.loading ? "opacity-50 pointer-events-none" : ""}`}
                 >
-                { results.map(
+                { search.results.map(
                   x => <SampleListEntry key={x.uuid} sample={x} onTagClick={handleTagClick} onPackClick={handlePackClick} playback={playback}/>
                 ) }
                 </div>
 
-                <ResultPagination currentPage={currentPage} totalPages={totalPages} onChange={changePage} />
+                { pagination }
               </div>
             : <StatusMessage icon="img/blob-salute.png">Waiting for your command!</StatusMessage>
         }
