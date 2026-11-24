@@ -23,6 +23,10 @@ tauri-plugin-log = "2"
 log = { version = "0.4", features = ["kv"] }
 time = "0.3"
 
+# Restoring samples is unbearably slow without any optimizations.
+[profile.dev.package.splicedd]
+opt-level = 2
+
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
