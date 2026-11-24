@@ -134,10 +134,8 @@ export default function SampleListEntry(
 
   const audio = audioRef.current;
 
-  const pack = sample.parents.items[0];
-  const packCover = pack
-    ? pack.files.find(x => x.asset_file_type_slug == "cover_image")?.url
-    : "img/missing-cover.png";
+  const pack: SpliceSamplePack | undefined = sample.parents.items[0];
+  const packCover = pack?.files.find(x => x.asset_file_type_slug == "cover_image")?.url ?? "img/missing-cover.png";
 
   const waveformUrl = sample.files.find(x => x.asset_file_type_slug == "waveform")?.url;
 
@@ -148,7 +146,11 @@ export default function SampleListEntry(
     if (fetchAhead.current != null)
       return;
 
-    const file = sample.files.find(x => x.asset_file_type_slug == "preview_mp3")!;
+    const file = sample.files.find(x => x.asset_file_type_slug == "preview_mp3");
+    if (file == null) {
+      log.warn("there's no preview to download", { sample: sample.name });
+      return;
+    }
 
     const span = log.span("fetch", { sample: sample.name, url: shortUrl(file.url) });
 
@@ -196,8 +198,39 @@ export default function SampleListEntry(
     }
   };
 
-  // The audio element isn't a part of the DOM, so it would outlive us otherwise.
-  useEffect(() => () => playbackClaim.current?.stop(), []);
+  // Neither the audio element nor the response is a part of the DOM, so they'd outlive us otherwise.
+  useEffect(() => () => {
+    playbackClaim.current?.stop();
+    revokeAudioUrl();
+    discardResponse();
+  }, []);
+
+  /** The source of the audio element, if it's a complete file (as opposed to a stream). */
+  const audioUrl = useRef<string | null>(null);
+
+  function revokeAudioUrl() {
+    if (audioUrl.current == null)
+      return;
+
+    URL.revokeObjectURL(audioUrl.current);
+    audioUrl.current = null;
+    audio.removeAttribute("src");
+  }
+
+  /**
+   * Discards the response that was fetched ahead, unless we're already making use of it. The connection
+   * is otherwise kept open forever, waiting for someone to read the body.
+   */
+  function discardResponse() {
+    if (download.current != null || decodedSample.current != null)
+      return;
+
+    const response = fetchAhead.current;
+    fetchAhead.current = null;
+    response
+      ?.then(x => x.body?.cancel())
+      .catch(err => log.debug("failed to discard a response", { sample: sample.name, err }));
+  }
 
   // While a sample is playing, keep its waveform's progress marker in
   // sync with the audio element.
@@ -259,9 +292,10 @@ export default function SampleListEntry(
             return;
           }
 
-          audio.src = URL.createObjectURL(
+          audioUrl.current = URL.createObjectURL(
             new Blob([decodedSample.current!], { "type": "audio/mpeg" })
           );
+          audio.src = audioUrl.current;
         }
       }
 
@@ -408,11 +442,16 @@ export default function SampleListEntry(
     startFetching();
 
     try {
-      const resp = await fetchAhead.current!;
+      if (fetchAhead.current == null)
+        throw new Error("The sample has no preview");
+
+      const resp = await fetchAhead.current;
       span.step("waited for headers", { status: resp.status });
 
-      if (!resp.ok)
+      if (!resp.ok) {
+        await resp.body?.cancel();
         throw new Error(`Splice returned HTTP ${resp.status}`);
+      }
 
       const decoder = new SpliceAudioDecoder();
 
@@ -446,6 +485,9 @@ export default function SampleListEntry(
 
   const sanitizePath = (x: string) => x.replace(/[<>:"|?* ]/g, "_");
 
+  /** Like `sanitizePath`, but for files. We always save WAVs, regardless of what the sample originally was. */
+  const sanitizeFilePath = (x: string) => sanitizePath(/\.wav$/i.test(x) ? x : x + ".wav");
+
   /** Incremented each time the user attempts to drag the sample. */
   const dragAttempt = useRef(0);
 
@@ -456,10 +498,9 @@ export default function SampleListEntry(
     if (ev.button != 0 || isContextMenuPress(ev))
       return;
 
-    // Verify that the parent of the element that we began the dragging from
-    // is not explicitly marked as non-draggable (as it may be clicked etc.)
-    const dragOrigin = document.elementFromPoint(ev.clientX, ev.clientY)?.parentElement;
-    if (dragOrigin != null && dragOrigin.dataset.draggable === "false") {
+    // Verify that the element that we began the dragging from isn't (a part of one that's)
+    // explicitly marked as non-draggable (as it may be clicked etc.)
+    if ((ev.target as Element).closest('[data-draggable="false"]') != null) {
       log.trace("ignoring drag from a non-draggable element", { sample: sample.name });
       return;
     }
@@ -546,10 +587,11 @@ export default function SampleListEntry(
     // drag plugin crashes the whole app if we try. Fall back to shorter layouts
     // (dropping the sample's own subfolders, then the pack folder) when needed.
     const fileName = sample.name.split("/").pop()!;
+    const packDir = pack == null ? "" : sanitizePath(pack.name) + "/";
     const candidates = [
-      sanitizePath(pack.name) + "/" + sanitizePath(sample.name),
-      sanitizePath(pack.name) + "/" + sanitizePath(fileName),
-      sanitizePath(fileName)
+      packDir + sanitizeFilePath(sample.name),
+      packDir + sanitizeFilePath(fileName),
+      sanitizeFilePath(fileName)
     ];
 
     let samplePath: string | null = null;
@@ -625,7 +667,7 @@ export default function SampleListEntry(
     try {
       let path = await save({
         title: "Download sample",
-        defaultPath: sanitizePath(sample.name.split("/").pop()!),
+        defaultPath: sanitizeFilePath(sample.name.split("/").pop()!),
         filters: [{ name: "WAV audio", extensions: ["wav"] }]
       });
 
@@ -786,31 +828,33 @@ export default function SampleListEntry(
 
       { /* pack cover + play/stop control */}
       <div className="flex items-center gap-3 shrink-0">
-        <Tooltip>
-          <TooltipTrigger>
-            <button
-              type="button"
-              onClick={() => onPackClick(pack)}
-              aria-label={`Show samples from ${pack.name}`}
-              data-draggable="false"
-              className="cursor-pointer"
-            >
-              <img
-                src={packCover} alt={pack.name}
-                width={36} height={36}
-                className="rounded-sm object-cover"
-                draggable={false}
-              />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <div className="flex flex-col gap-2 p-3 max-w-40">
-              <img src={packCover} alt={pack.name} width={128} height={128} className="rounded-lg" />
-              <span className="text-sm font-medium">{pack.name}</span>
-              <span className="text-xs text-muted text-balance">Click to show samples from this pack</span>
-            </div>
-          </TooltipContent>
-        </Tooltip>
+        {pack == null
+          ? <img src={packCover} alt="" width={36} height={36} className="rounded-sm object-cover" draggable={false} />
+          : <Tooltip>
+            <TooltipTrigger>
+              <button
+                type="button"
+                onClick={() => onPackClick(pack)}
+                aria-label={`Show samples from ${pack.name}`}
+                data-draggable="false"
+                className="cursor-pointer"
+              >
+                <img
+                  src={packCover} alt={pack.name}
+                  width={36} height={36}
+                  className="rounded-sm object-cover"
+                  draggable={false}
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <div className="flex flex-col gap-2 p-3 max-w-40">
+                <img src={packCover} alt={pack.name} width={128} height={128} className="rounded-lg" />
+                <span className="text-sm font-medium">{pack.name}</span>
+                <span className="text-xs text-muted text-balance">Click to show samples from this pack</span>
+              </div>
+            </TooltipContent>
+          </Tooltip>}
 
         <button
           type="button"
