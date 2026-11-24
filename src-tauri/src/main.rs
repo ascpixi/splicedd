@@ -12,7 +12,6 @@ use tauri::webview::PageLoadEvent;
 use tauri::{Listener, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 // The label Tauri gives to the window defined in `tauri.conf.json`.
-#[cfg(target_os = "macos")]
 const MAIN_LABEL: &str = "main";
 
 // Run the helper on the GraphQL origin itself. Fetching from splice.com requires
@@ -64,7 +63,14 @@ fn main() {
                 macos::hide_main_window(window);
             }
             WindowEvent::CloseRequested { .. } => log::info!("[{}] close requested", window.label()),
-            WindowEvent::Destroyed => log::info!("[{}] destroyed", window.label()),
+            WindowEvent::Destroyed => {
+                log::info!("[{}] destroyed", window.label());
+
+                // The (hidden) window of the helper would otherwise keep us running in the background.
+                if window.label() == MAIN_LABEL {
+                    window.app_handle().exit(0);
+                }
+            }
             _ => {}
         })
         .setup(|app| {
