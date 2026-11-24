@@ -17,7 +17,6 @@ export type ProcessingMode = "accurate" | "classic" | "classic-trimmed";
  */
 export interface SpliceddConfig {
   sampleDir: string;
-  placeholders: boolean;
 
   processing: ProcessingMode;
   darkMode: boolean;
@@ -39,7 +38,6 @@ function defaultCfg(): SpliceddConfig {
   return {
     sampleDir: "",
     darkMode: true,
-    placeholders: false,
     processing: "accurate",
     checkUpdates: true,
     skippedUpdateVersion: "",
@@ -89,7 +87,8 @@ export async function loadConfig() {
 
     // "trimDelay" has been replaced by "processing". It's ignored on purpose - regardless
     // of what it was set to, everyone starts out with the default processing mode.
-    const { trimDelay: _, ...saved } = JSON.parse(raw);
+    // "placeholders" belonged to a feature that has since been removed.
+    const { trimDelay: _, placeholders: __, ...saved } = JSON.parse(raw);
     globalCfg = { ...defaultCfg(), ...saved };
 
     log.info("config loaded", { config: globalCfg });

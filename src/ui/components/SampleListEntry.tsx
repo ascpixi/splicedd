@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 
 import * as wav from "node-wav";
-import { checkDirExists, checkFileExists, createPlaceholder, IS_WINDOWS, removePlaceholder, restoreSample, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
+import { checkDirExists, checkFileExists, IS_WINDOWS, restoreSample, WINDOWS_MAX_PATH, writeSampleFile } from "../../native";
 import { basename, dirname, join } from "@tauri-apps/api/path";
 import { save } from "@tauri-apps/plugin-dialog";
 
@@ -350,7 +350,6 @@ export default function SampleListEntry(
       uuid: sample.uuid,
       durationMs: sample.duration,
       alreadyBusy: fgLoading,
-      placeholders: cfg().placeholders,
       processing: cfg().processing
     });
 
@@ -463,19 +462,12 @@ export default function SampleListEntry(
     setDragPending(true);
     await ensureAudioDecoded(span);
 
-    let started = false;
-    if (cfg().placeholders && mouse.heldFor() == null) {
-      await createPlaceholder(cfg().sampleDir, samplePath);
-      span.step("created placeholder");
-      started = beginDrag(fullPath, span, mouse);
-    }
-
     pendingExport.current ??= exportSample(cfg().sampleDir, samplePath, span)
       .finally(() => pendingExport.current = null);
 
     await pendingExport.current;
 
-    return started || beginDrag(fullPath, span, mouse);
+    return beginDrag(fullPath, span, mouse);
   }
 
   function handleContextMenu(ev: React.MouseEvent) {
@@ -545,15 +537,8 @@ export default function SampleListEntry(
 
   /** Converts the (already downloaded) sample to a WAV file in the sample folder. */
   async function exportSample(baseDir: string, samplePath: string, span: LogSpan) {
-    try {
-      await writeSampleFile(baseDir, samplePath, await encodeSample(span));
-      span.step("wrote file");
-    }
-    catch (err) {
-      // Don't leave an empty file behind. If this fails, the error has already been logged.
-      await removePlaceholder(baseDir, samplePath).catch(() => {});
-      throw err;
-    }
+    await writeSampleFile(baseDir, samplePath, await encodeSample(span));
+    span.step("wrote file");
   }
 
   /** Converts the (already downloaded) sample to WAV, using the processing mode that the user has chosen. */

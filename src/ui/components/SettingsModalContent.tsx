@@ -54,7 +54,6 @@ function SettingRow({ title, description, control, children }: {
 
 export default function SettingsModalContent({ onClose }: { onClose: () => void }) {
   const sampleDir = useCfgSyncedState<string>("sampleDir");
-  const placeholders = useCfgSyncedState<boolean>("placeholders");
   const processing = useCfgSyncedState<ProcessingMode>("processing");
   const darkMode = useCfgSyncedState<boolean>("darkMode");
   const checkUpdates = useCfgSyncedState<boolean>("checkUpdates");
@@ -122,20 +121,6 @@ export default function SettingsModalContent({ onClose }: { onClose: () => void 
               >Browse</BrowseButton>
             </div>
           </SettingRow>
-
-          <SettingRow
-            title="Placeholder files"
-            description="Drag samples into your DAW before they finish downloading. Some DAWs may not like this."
-            control={
-              <Switch
-                isSelected={ cfg().placeholders }
-                onChange={ x => mutateCfgSync(x, placeholders) }
-                aria-label="Enable placeholder files"
-              >
-                <SwitchControl><SwitchThumb /></SwitchControl>
-              </Switch>
-            }
-          />
 
           <SettingRow
             title="Processing"

@@ -100,19 +100,3 @@ export async function checkDirExists(path: string) {
 
   return await invoke<boolean>("dir_exists", { path });
 }
-
-/**
- * Creates an empty placeholder file on the path retriveved by combining "baseDir" and "relativePath".
- */
-// /src-tauri/src/files.rs
-export async function createPlaceholder(baseDir: string, relativePath: string) {
-  await invoke("create_placeholder_file", { baseDir, relativePath }, { relativePath });
-}
-
-/**
- * Removes a file created by `createPlaceholder`, unless something has already been written to it.
- */
-// /src-tauri/src/files.rs
-export async function removePlaceholder(baseDir: string, relativePath: string) {
-  await invoke("remove_placeholder_file", { baseDir, relativePath }, { relativePath });
-}

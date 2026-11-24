@@ -209,8 +209,6 @@ fn main() {
             files::write_sample_file,
             files::file_exists,
             files::dir_exists,
-            files::create_placeholder_file,
-            files::remove_placeholder_file,
             restore::restore_sample,
             updater::fetch_releases,
             updater::install_update,
