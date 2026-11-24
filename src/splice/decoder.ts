@@ -1,30 +1,54 @@
 import { IS_MACOS } from "../native";
 
+/** The length of the header of a scrambled sample - it precedes the actual audio data. */
+const HEADER_LENGTH = 28;
+
 /**
- * Decodes a "scrambled" Splice MP3 sample.
- * @returns The unscrambled sample, also in the MP3 format.
+ * Decodes a "scrambled" Splice MP3 sample, part by part.
+ *
+ * The header consists of a 2-byte magic, the block size (64-bit little endian), and an 18-byte key.
+ * Out of the blocks that come after it, the first and the third are XOR-ed with the key.
  */
-export function decodeSpliceAudio(data: Uint8Array) {
-  let sizeData = Array.from(data.subarray(2, 10));
-  let size = 0;
+export class SpliceAudioDecoder {
+  private readonly header = new Uint8Array(HEADER_LENGTH);
+  private headerReceived = 0;
+  private blockSize = 0;
 
-  for (let en = sizeData.length - 1; en >= 0; en--) {
-    size = (256 * size) + sizeData[en];
+  /** The amount of audio bytes that have been decoded so far. */
+  private position = 0;
+
+  /**
+   * Decodes the next part of the sample.
+   * @returns The part, unscrambled. All of the parts make up an MP3 file. Might be empty.
+   */
+  push(data: Uint8Array) {
+    const header = data.subarray(0, HEADER_LENGTH - this.headerReceived);
+    if (header.length > 0) {
+      this.header.set(header, this.headerReceived);
+      this.headerReceived += header.length;
+
+      if (this.headerReceived == HEADER_LENGTH) {
+        this.blockSize = this.header.subarray(2, 10).reduceRight((size, x) => 256 * size + x, 0);
+      }
+    }
+
+    const audio = data.slice(header.length);
+    const key = this.header.subarray(10);
+    const size = this.blockSize;
+
+    for (let i = 0; i < audio.length; i++) {
+      const pos = this.position + i;
+      if (pos >= 3 * size)
+        break;
+
+      if (pos < size || pos >= 2 * size) {
+        audio[i] ^= key[(pos % size) % key.length];
+      }
+    }
+
+    this.position += audio.length;
+    return audio;
   }
-
-  let encodingData = data.subarray(10, 28);
-
-  const encodeBlkArr = [];
-  for (let i = 0; i < encodingData.length; i += 32768) {
-    encodeBlkArr.push(String.fromCharCode(...Array.from(encodingData.subarray(i, i + 32768))));
-  }
-
-  const encodeBlk = encodeBlkArr.join("");
-  const audioData = data.slice(28);
-
-  let passIdx = decodePass(0, audioData, encodeBlk, size) + size;
-  decodePass(passIdx, audioData, encodeBlk, passIdx + size);
-  return audioData;
 }
 
 /**
@@ -96,22 +120,4 @@ export function describeMp3(data: Uint8Array) {
     header: Array.from(data.subarray(frame.offset, frame.offset + 4), x => x.toString(16).padStart(2, "0")).join(""),
     gaplessHeaders: ["Xing", "Info", "VBRI", "LAME", "Lavc"].filter(x => firstFrame.includes(x))
   };
-}
-
-function decodePass(i: number, arr: Uint8Array, encodeBlk: string, size: number) {
-  let encblkIdx = 0;
-
-  for (; i < size; i++) {
-    if (encblkIdx > encodeBlk.length - 1) {
-      encblkIdx = 0; // wraparound
-    }
-
-    if (i < size) {
-      arr[i] = arr[i] ^ encodeBlk.charCodeAt(encblkIdx);
-    }
-
-    encblkIdx++;
-  }
-
-  return i;
 }

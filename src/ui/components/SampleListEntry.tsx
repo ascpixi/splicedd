@@ -11,12 +11,13 @@ import { basename, dirname, join } from "@tauri-apps/api/path";
 import { save } from "@tauri-apps/plugin-dialog";
 
 import { cfg } from "../../config";
-import { readBody } from "../../download";
+import { concatBytes, readBody } from "../../download";
 import { DRAG_PREVIEW_ICON } from "../../dragIcon";
 import { PlaybackClaim, PlaybackController } from "../playback";
+import { Mp3Stream, shouldStream } from "../streaming";
 import { SpliceTag } from "../../splice/entities";
 import { SpliceSample, SpliceSamplePack } from "../../splice/api";
-import { decodeSpliceAudio, describeMp3, getMp3SampleRate, MP3_START_DELAY } from "../../splice/decoder";
+import { describeMp3, getMp3SampleRate, MP3_START_DELAY, SpliceAudioDecoder } from "../../splice/decoder";
 import { createLogger, isVerbose, LogSpan, shortUrl } from "../../log";
 import SampleContextMenu, { ContextMenuPosition, isContextMenuPress } from "./SampleContextMenu";
 import Waveform from "./Waveform";
@@ -176,6 +177,25 @@ export default function SampleListEntry(
     setProgress(0);
   };
 
+  // Streams can run out of audio to play if the download isn't fast enough.
+  audio.onwaiting = () => {
+    if (stream.current != null && playbackClaim.current?.active) {
+      setPlayPending(true);
+    }
+  };
+
+  audio.onplaying = () => {
+    if (playbackClaim.current?.active) {
+      setPlayPending(false);
+    }
+  };
+
+  audio.onerror = () => {
+    if (stream.current != null) {
+      abandonStream(stream.current, audio.error?.message);
+    }
+  };
+
   // The audio element isn't a part of the DOM, so it would outlive us otherwise.
   useEffect(() => () => playbackClaim.current?.stop(), []);
 
@@ -219,21 +239,34 @@ export default function SampleListEntry(
     const claim = playbackClaim.current = playback.claim(stop);
 
     try {
-      if (audio.src == "") {
-        setPlayPending(true);
-        await ensureAudioDecoded(span);
-
-        if (!claim.active) {
-          span.end("stopped before it could start");
-          return;
-        }
-
-        audio.src = URL.createObjectURL(
-          new Blob([decodedSample.current!], { "type": "audio/mpeg" })
-        );
+      // Once a streamed sample is complete, it's better to play it as a regular file.
+      if (stream.current != null && decodedSample.current != null) {
+        closeStream();
       }
 
-      setPlayPending(false);
+      if (audio.src == "") {
+        setPlayPending(true);
+
+        if (decodedSample.current == null && !streamBroken.current && shouldStream(sample.duration)) {
+          startStreaming();
+          span.step("started streaming");
+        }
+        else {
+          await ensureAudioDecoded(span);
+
+          if (!claim.active) {
+            span.end("stopped before it could start");
+            return;
+          }
+
+          audio.src = URL.createObjectURL(
+            new Blob([decodedSample.current!], { "type": "audio/mpeg" })
+          );
+        }
+      }
+
+      // Streams need to wait for some of the audio to be downloaded.
+      setPlayPending(stream.current != null);
       setPlaying(true);
 
       const started = audio.play();
@@ -242,7 +275,7 @@ export default function SampleListEntry(
       }
 
       await started;
-      span.step("started playing");
+      span.step("started playing", { streaming: stream.current != null });
       span.end();
     }
     catch (err) {
@@ -273,7 +306,79 @@ export default function SampleListEntry(
     }
   }
 
+  /** What the audio element is playing, if the sample is being streamed. */
+  const stream = useRef<Mp3Stream | null>(null);
+
+  /** Whether the sample can't be streamed, and needs to be downloaded before it's played. */
+  const streamBroken = useRef(false);
+
+  /** Makes the audio element play the sample while it's still being downloaded. */
+  function startStreaming() {
+    const span = log.span("stream", { sample: sample.name, durationMs: sample.duration });
+
+    const current: Mp3Stream = new Mp3Stream(sample.duration, err => abandonStream(current, err));
+    stream.current = current;
+    audio.src = current.url;
+
+    const downloaded = ensureAudioDecoded(span);
+
+    // We might've already been downloading by then, e.g. because of the user dragging us.
+    for (const part of downloadedParts.current) {
+      current.push(part);
+    }
+
+    downloaded.then(
+      () => {
+        current.end();
+        span.end();
+      },
+      err => {
+        span.fail(err);
+
+        if (stream.current != current)
+          return;
+
+        closeStream();
+
+        if (playbackClaim.current?.active) {
+          playbackClaim.current.stop();
+          toast.danger("Couldn't play this sample", { description: "Please try again." });
+        }
+      }
+    );
+  }
+
+  /** Detaches the stream (if there's one) from the audio element. */
+  function closeStream() {
+    if (stream.current == null)
+      return;
+
+    stream.current.close();
+    stream.current = null;
+    audio.removeAttribute("src");
+    audio.load();
+  }
+
+  /** Gives up on a stream that can't be played, resorting to playing the sample after it's downloaded. */
+  function abandonStream(target: Mp3Stream, err: unknown) {
+    if (stream.current != target)
+      return;
+
+    const position = audio.currentTime / (sample.duration / 1000);
+    log.warn("couldn't stream the sample - downloading it first", { sample: sample.name, position, err });
+
+    streamBroken.current = true;
+    closeStream();
+
+    if (playbackClaim.current?.active) {
+      play(position);
+    }
+  }
+
   const download = useRef<Promise<void> | null>(null);
+
+  /** The parts of the sample that the ongoing download has received so far. Empty if there's none. */
+  const downloadedParts = useRef<Uint8Array[]>([]);
 
   async function ensureAudioDecoded(span: LogSpan) {
     if (decodedSample.current != null) {
@@ -309,18 +414,32 @@ export default function SampleListEntry(
       if (!resp.ok)
         throw new Error(`Splice returned HTTP ${resp.status}`);
 
-      // Rounding the progress makes most of the updates not cause a re-render.
-      const data = await readBody(resp, x => setDownloadProgress(Math.round(x * 100)));
-      span.step("read body", { bytes: data.byteLength, contentLength: resp.headers.get("content-length") });
+      const decoder = new SpliceAudioDecoder();
 
-      decodedSample.current = decodeSpliceAudio(data);
-      span.step("unscrambled", { mp3: describeMp3(decodedSample.current) });
+      const bytes = await readBody(
+        resp,
+        chunk => {
+          const part = decoder.push(chunk);
+          downloadedParts.current.push(part);
+          stream.current?.push(part);
+        },
+        // Rounding the progress makes most of the updates not cause a re-render.
+        x => setDownloadProgress(Math.round(x * 100))
+      );
+
+      decodedSample.current = concatBytes(downloadedParts.current);
+      span.step("read body", {
+        bytes,
+        contentLength: resp.headers.get("content-length"),
+        mp3: describeMp3(decodedSample.current)
+      });
     }
     catch (err) {
       fetchAhead.current = null; // the response can't be reused
       throw err;
     }
     finally {
+      downloadedParts.current = [];
       setDownloadProgress(null);
     }
   }
