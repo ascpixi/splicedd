@@ -10,6 +10,7 @@ import { checkDirExists, checkFileExists, createPlaceholder, IS_WINDOWS, removeP
 import { join } from "@tauri-apps/api/path";
 
 import { cfg } from "../../config";
+import { readBody } from "../../download";
 import { DRAG_PREVIEW_ICON } from "../../dragIcon";
 import { PlaybackClaim, PlaybackController } from "../playback";
 import { SpliceTag } from "../../splice/entities";
@@ -89,6 +90,9 @@ export default function SampleListEntry(
   const [playPending, setPlayPending] = useState(false);
   const [dragPending, setDragPending] = useState(false);
   const fgLoading = playPending || dragPending;
+
+  // How much of the sample has been downloaded (0 to 100), or `null` if that's unknown.
+  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
 
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -297,15 +301,19 @@ export default function SampleListEntry(
       if (!resp.ok)
         throw new Error(`Splice returned HTTP ${resp.status}`);
 
-      const data = await resp.arrayBuffer();
+      // Rounding the progress makes most of the updates not cause a re-render.
+      const data = await readBody(resp, x => setDownloadProgress(Math.round(x * 100)));
       span.step("read body", { bytes: data.byteLength, contentLength: resp.headers.get("content-length") });
 
-      decodedSample.current = decodeSpliceAudio(new Uint8Array(data));
+      decodedSample.current = decodeSpliceAudio(data);
       span.step("unscrambled", { mp3: describeMp3(decodedSample.current) });
     }
     catch (err) {
       fetchAhead.current = null; // the response can't be reused
       throw err;
+    }
+    finally {
+      setDownloadProgress(null);
     }
   }
 
@@ -579,7 +587,12 @@ export default function SampleListEntry(
                       ${playing ? "text-accent" : "text-current"}`}
         >
           {fgLoading
-            ? <ProgressCircle aria-label="Loading sample..." className="h-6" isIndeterminate>
+            ? <ProgressCircle
+                aria-label="Loading sample..."
+                className="h-6"
+                isIndeterminate={downloadProgress == null}
+                value={downloadProgress ?? 0}
+              >
                 <ProgressCircleTrack>
                   <ProgressCircleTrackCircle />
                   <ProgressCircleFillCircle />
