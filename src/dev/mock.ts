@@ -1,4 +1,4 @@
-import { SpliceSample, SpliceSearchResponse } from "../splice/api";
+import { SplicePackSearchResult, SpliceSample, SpliceSearchResponse } from "../splice/api";
 import { ChordType, MusicKey, SpliceTag } from "../splice/entities";
 
 // Mock search data, used only when the app runs outside of the Tauri shell
@@ -39,6 +39,22 @@ const PACKS = [
   { uuid: "pack-2", name: "Concrete Jungle Drums", permalink_base_url: "mock" },
   { uuid: "pack-3", name: "Velvet Keys & Chords", permalink_base_url: "mock" },
 ];
+
+const GENRES = ["Trap", "House", "Lo-Fi", "Techno"]
+  .map((label, i) => ({ uuid: `genre-${i}`, label, taxonomy: { uuid: "tx-genre", name: "Genre" as const } }));
+
+function mockPack(i: number): SplicePackSearchResult {
+  const pack = PACKS[i] ?? { uuid: `pack-${i + 1}`, name: `Mock Pack Vol. ${i + 1}`, permalink_base_url: "mock" };
+  return {
+    ...pack,
+    main_genre: GENRES[i % GENRES.length].label,
+    provider: { name: "Mock Audio" },
+    child_asset_counts: [{ type: "sample", count: 37 * (i + 1) }, { type: "preset", count: 0 }],
+    files: [{ path: "", asset_file_type_slug: "cover_image", url: "img/missing-cover.png" }]
+  };
+}
+
+const PACK_RESULTS = Array.from({ length: 30 }, (_, i) => mockPack(i));
 
 function mockSample(
   i: number,
@@ -98,9 +114,32 @@ const SAMPLES: SpliceSample[] = [
     { pack: 1, bpm: 174, key: null, chord: null, duration: 5517, category: "loop", tags: tagsOf("drums", "percussion", "trap") }),
 ];
 
+function mockPackSearch(variables: { query: string, tags: string[], page?: number }): string {
+  const items = PACK_RESULTS
+    .filter(x => x.name.toLowerCase().includes(variables.query.toLowerCase()))
+    .filter(x => variables.tags.every(tag => GENRES.find(y => y.uuid == tag)?.label == x.main_genre));
+
+  const response: SpliceSearchResponse<SplicePackSearchResult> = {
+    data: {
+      assetsSearch: {
+        items,
+        tag_summary: GENRES.map((tag, i) => ({ tag, count: 10 - i })),
+        response_metadata: { records: items.length },
+        pagination_metadata: { currentPage: variables.page ?? 1, totalPages: 3 }
+      }
+    }
+  };
+
+  return JSON.stringify(response);
+}
+
 /** Returns a canned response mimicking what the Splice search endpoint would return. */
 export function mockSearch(body: string): string {
   const payload = JSON.parse(body);
+
+  if (payload.operationName == "PacksSearch")
+    return mockPackSearch(payload.variables);
+
   const query: string = payload.variables.filepath ?? "";
   const parentUuid: string | undefined = payload.variables.parent_asset_uuid;
 
@@ -117,10 +156,7 @@ export function mockSearch(body: string): string {
             tag: { uuid: `instr-${i}`, label, taxonomy: { uuid: "tx-instr", name: "Instrument" as const } },
             count: 10 - i
           })),
-          ...["Trap", "House", "Lo-Fi", "Techno"].map((label, i) => ({
-            tag: { uuid: `genre-${i}`, label, taxonomy: { uuid: "tx-genre", name: "Genre" as const } },
-            count: 10 - i
-          }))
+          ...GENRES.map((tag, i) => ({ tag, count: 10 - i }))
         ],
         response_metadata: { records: items.length },
         pagination_metadata: { currentPage: payload.variables.page ?? 1, totalPages: 3 }
