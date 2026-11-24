@@ -4,8 +4,8 @@ import test from "node:test";
 import vm from "node:vm";
 
 const script = readFileSync(new URL("../src-tauri/src/splice-helper.js", import.meta.url), "utf8");
-const backend = readFileSync(new URL("../src-tauri/src/main.rs", import.meta.url), "utf8");
-const helperUrl = backend.match(/const SPLICE_HELPER_URL: &str = "([^"]+)"/)[1];
+const backend = readFileSync(new URL("../src-tauri/src/helper.rs", import.meta.url), "utf8");
+const helperUrl = backend.match(/const URL: &str = "([^"]+)"/)[1];
 const origin = new URL(helperUrl).origin;
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 const response = (body = '{"data":{"assetsSearch":{"items":[]}}}', status = 200, challenge = false) => ({

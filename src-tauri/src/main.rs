@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod files;
+mod helper;
 mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -9,17 +10,10 @@ mod restore;
 mod updater;
 
 use tauri::webview::PageLoadEvent;
-use tauri::{Listener, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{Manager, RunEvent, WindowEvent};
 
 // The label Tauri gives to the window defined in `tauri.conf.json`.
 const MAIN_LABEL: &str = "main";
-
-// Run the helper on the GraphQL origin itself. Fetching from splice.com requires
-// a CORS preflight, which Cloudflare can challenge before the search is sent.
-// Same-origin requests retain browser security and use the helper's cookies.
-const SPLICE_HELPER_LABEL: &str = "splice-helper";
-const SPLICE_HELPER_URL: &str = "https://surfaces-graphql.splice.com/graphql";
-const SPLICE_HELPER_INIT: &str = include_str!("splice-helper.js");
 
 fn main() {
     // WebKitGTK's DMA-BUF renderer fails on many Linux GPU setups (notably NVIDIA
@@ -76,23 +70,11 @@ fn main() {
         .setup(|app| {
             logging::start_session(app.handle());
 
-            // This must be listened for before the helper is created.
-            app.listen("splice-helper-log", |event| logging::log_helper_message(event.payload()));
-
             // Create this before the frontend starts. The config loader and
             // writer can then safely access config.json through the fs plugin.
             std::fs::create_dir_all(app.path().app_config_dir()?)?;
 
-            WebviewWindowBuilder::new(
-                app,
-                SPLICE_HELPER_LABEL,
-                WebviewUrl::External(SPLICE_HELPER_URL.parse().unwrap()),
-            )
-            .title("splice-helper")
-            .visible(false)
-            .skip_taskbar(true)
-            .initialization_script(SPLICE_HELPER_INIT)
-            .build()?;
+            helper::create(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
